@@ -51,10 +51,19 @@ COUNTRY_CODE_ALIASES = {'UK': 'GB'}
 # An isolated 4-digit number: plausible as a release year (original, reissue/remaster, ...)
 YEAR_RE = re.compile(r"(?<!\d)(\d{4})(?!\d)")
 
+DISC_WORD_NUMS = {
+    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+    'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14,
+    'fifteen': 15, 'sixteen': 16, 'seventeen': 17, 'eighteen': 18,
+    'nineteen': 19, 'twenty': 20
+}
+
 # Classic tokens found in disc-only folder names ("Disc 1", "CD2", "Bonus Disc", "B-Sides"...)
-# cd/disc/vinyl only count as a token if followed by a number
+# cd/disc/vinyl only count as a token if followed by a number (digit or spelled-out)
 DISC_TOKEN_RE = re.compile(
-    r"(?i)\b(?:cd|dis[ck]|vinyl)\s*\d{1,2}(?!\d)|\b(?:dvd|bonus|b-?sides?|remix(es)?|album|vol(?:ume)?|part|pt)(?![a-z])"
+    r"(?i)\b(?:cd|dis[ck]|vinyl|d)\s*(?P<num>\d{1,2}(?!\d)|" + '|'.join(DISC_WORD_NUMS) + r")\b"
+    r"|\b(?:dvd|bonus|b-?sides?|remix(es)?|album|vol(?:ume)?|part|pt)(?![a-z])"
 )
 
 PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
@@ -101,7 +110,11 @@ def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[s
     if album and (pattern := build_strip_pattern(album)):
         folder = pattern.sub(' ', folder)
 
-    numbers = [int(n) for x in re.finditer(DISC_TOKEN_RE, folder) for n in re.findall(r'\d+', x.group())]
+    numbers = [
+        int(n) if n.isdigit() else DISC_WORD_NUMS[n.lower()]
+        for n in (m.group('num') for m in re.finditer(DISC_TOKEN_RE, folder))
+        if n
+    ]
 
     folder = DISC_TOKEN_RE.sub(' ', folder)
     folder = PUNCT_RE.sub('', folder).strip()
