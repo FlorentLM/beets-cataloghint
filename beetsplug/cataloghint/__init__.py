@@ -214,6 +214,18 @@ def strip_outside_brackets(text: str, pattern: re.Pattern) -> str:
     return ''.join(parts)
 
 
+def validate_preferred_countries(codes: list[str]) -> list[str]:
+    """Validate user-supplied country codes."""
+    seen = set()
+    result = []
+    for code in codes:
+        aliased = COUNTRY_CODE_ALIASES.get(code.upper(), code.upper())
+        if aliased in COUNTRY_CODES_MB and aliased not in seen:
+            seen.add(aliased)
+            result.append(aliased)
+    return result
+
+
 def extract_years(text: str) -> set[int]:
     """
     All plausible release years found in `text`.
@@ -438,6 +450,7 @@ def score_hits(
         folder_years: set[int],
         disc_layout: Optional[dict[int, int]] = None,
         target_formats: Optional[frozenset[str]] = None,
+        preferred_countries: Optional[list[str]] = None,
         log=None,
     ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
     """
@@ -446,6 +459,7 @@ def score_hits(
     A release contradicted by non-matching disc layout or target format is vetoed. One with fully matching disc layout gets a bonus.
     A text match that's shared with another release in the group (a reused disambiguation label, for instance) is
     weak evidence: a differently-dated survivor whose year matches an explicit folder year outranks it instead.
+    Finally if several releases are still tied, `preferred_countries` preference order breaks the tie.
     Returns the unique best match's id (or None if none stands out), plus the full per-hit score.
     """
 
@@ -549,6 +563,21 @@ def score_hits(
         if len(year_matches) == 1 and year_matches != matches:
             matches = year_matches
 
+    preferred_country_tiebreak = False
+    if len(matches) > 1 and preferred_countries:
+        hits_by_id = {hit['id']: hit for hit in hits}
+        ranked = {
+            release_id: preferred_countries.index(country)
+            for release_id in matches
+            if (country := hits_by_id[release_id].get('country')) in preferred_countries
+        }
+        if ranked:
+            best_rank = min(ranked.values())
+            narrowed = {release_id for release_id, rank in ranked.items() if rank == best_rank}
+            if len(narrowed) == 1:
+                matches = narrowed
+                preferred_country_tiebreak = True
+
     if len(matches) != 1:
         return None, scored
     # TODO: Return all the good matches
@@ -556,7 +585,9 @@ def score_hits(
     release_id = next(iter(matches))
     _, score, matched_text, country_match, year_match = next(s for s in scored if s[0] == release_id)
 
-    if score == best_score and score > 0:
+    if preferred_country_tiebreak:
+        reason = 'preferred country'
+    elif score == best_score and score > 0:
         reason = f'text overlap {matched_text!r}'
     elif year_match:
         reason = 'year match'
@@ -574,6 +605,7 @@ def resolve_release(
         album: Optional[str],
         check_cue: bool = True,
         filenames: Optional[set[str]] = None,
+        preferred_countries: Optional[list[str]] = None,
         log=None,
     ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
     """
@@ -608,7 +640,8 @@ def resolve_release(
               disc_layout or None, sorted(target_formats) if target_formats else None)
 
     return score_hits(
-        hits, folder_exact, folder_loose, folder_countries, folder_years, disc_layout, target_formats, logger
+        hits, folder_exact, folder_loose, folder_countries, folder_years, disc_layout, target_formats,
+        preferred_countries, logger,
     )
 
 
@@ -622,6 +655,7 @@ class CatalogHintPlugin(BeetsPlugin):
                 'check_cue': True,
                 'check_sibling_discs': True,
                 'auto_apply': False,
+                'preferred_countries': [],
             }
         )
         self.register_listener('import_task_before_choice', self.before_choice)
@@ -734,9 +768,12 @@ class CatalogHintPlugin(BeetsPlugin):
         item_dir = os.path.dirname(os.fsdecode(task.items[0].path))
         filenames = {os.path.basename(os.fsdecode(item.path)) for item in task.items}
 
+        preferred_countries = validate_preferred_countries(self.config['preferred_countries'].as_str_seq())
+
         return resolve_release(
             hits, item_dir, task.source.artist, task.source.name,
-            check_cue=self.config['check_cue'].get(bool), filenames=filenames, log=log,
+            check_cue=self.config['check_cue'].get(bool), filenames=filenames,
+            preferred_countries=preferred_countries, log=log,
         )
 
     def _flag_if_outscored(self,

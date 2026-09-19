@@ -18,6 +18,7 @@ from beetsplug.cataloghint import (
     gather_haystack,
     gather_needles,
     match_score,
+    validate_preferred_countries,
     score_hits,
 )
 from beetsplug.cataloghint.cuefiles import has_cue
@@ -147,6 +148,43 @@ def test_score_hits_leaves_a_genuine_multi_way_tie_unresolved():
     release_id, scored = score_hits(hits, 'xyz-123', 'xyz123', set(), {2015})
     assert release_id is None
     assert len(scored) == 3
+
+
+def test_score_hits_preferred_countries_breaks_a_genuine_tie():
+    hits = [
+        {'id': 'a', 'date': '2015', 'country': 'US', 'label_info': [{'catalog_number': 'XYZ-123'}]},
+        {'id': 'b', 'date': '2015', 'country': 'GB', 'label_info': [{'catalog_number': 'XYZ-123'}]},
+    ]
+    release_id, _ = score_hits(
+        hits, 'xyz-123', 'xyz123', set(), {2015}, preferred_countries=['GB', 'US'],
+    )
+    assert release_id == 'b'
+
+
+def test_score_hits_preferred_countries_is_not_consulted_when_other_evidence_resolves_it():
+    hits = [
+        {'id': 'strong_match', 'date': '2010', 'country': 'US', 'label_info': [{'catalog_number': '0602527463841'}]},
+        {'id': 'year_only', 'date': '2000', 'country': 'GB'},
+    ]
+    release_id, _ = score_hits(
+        hits, '0602527463841', '0602527463841', set(), {2000}, preferred_countries=['GB'],
+    )
+    assert release_id == 'strong_match'
+
+
+def test_score_hits_preferred_countries_still_defers_when_none_of_the_tied_releases_are_listed():
+    hits = [
+        {'id': 'a', 'date': '2015', 'country': 'FR', 'label_info': [{'catalog_number': 'XYZ-123'}]},
+        {'id': 'b', 'date': '2015', 'country': 'DE', 'label_info': [{'catalog_number': 'XYZ-123'}]},
+    ]
+    release_id, _ = score_hits(
+        hits, 'xyz-123', 'xyz123', set(), {2015}, preferred_countries=['GB', 'US'],
+    )
+    assert release_id is None
+
+
+def test_normalize_preferred_countries_aliases_and_drops_unknowns():
+    assert validate_preferred_countries(['uk', 'usa', 'gb', 'zz']) == ['GB', 'US']
 
 
 def test_score_hits_prefers_year_match_over_a_disambiguation_shared_with_another_release():
