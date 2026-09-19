@@ -11,6 +11,7 @@ cataloghint scores release from a release-group against whatever is found in the
   another release in the same group, the recommendation is forced to none.
 - A disc under a parent folder where sibling disc(s) have already resolved is matched that same release
   directly (as long as it still fits within the remaining multi-dic track count).
+- Multi-discs per-disc track-counts veto any release that doesn't match, and strongly favours those that do.
 """
 from __future__ import annotations
 import difflib
@@ -18,6 +19,7 @@ import os
 import re
 from datetime import date
 from typing import TYPE_CHECKING, Optional, Tuple
+import mediafile
 import requests
 from beets import plugins
 from beets.autotag import Recommendation
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
 ## Configs
 
 MIN_OVERLAP = 5     # below this, a (non-year) shared digit run is more likely coincidence
+LAYOUT_MATCH_BONUS = 2.5     # > than max match_score (2.0): a multi-disc layout match beats text matches   # TODO: Tune this?
 
 
 ## Compiled regexes
@@ -69,6 +72,8 @@ DISC_TOKEN_RE = re.compile(
 PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
 DISC_NAME_MAX_LEN = 10
+
+AUDIO_EXTENSIONS = {f'.{ext}' for ext in mediafile.TYPES}
 
 
 ## Custom error
@@ -109,6 +114,9 @@ def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[s
 
     if album and (pattern := build_strip_pattern(album)):
         folder = pattern.sub(' ', folder)
+
+    if folder.strip().isdigit() and 0 < int(folder.strip()) < 20:
+        return True, int(folder.strip())
 
     numbers = [
         int(n) if n.isdigit() else DISC_WORD_NUMS[n.lower()]
@@ -180,6 +188,54 @@ def extract_years(text: str) -> set[int]:
         year for match in YEAR_RE.findall(text)
         if 1800 <= (year := int(match)) <= current_year + 1
     }
+
+def hit_track_counts(hit: dict) -> dict[int, int]:
+    """A MusicBrainz release's track count, per disc."""
+    counts = {}
+    for medium in hit.get('media') or []:
+        try:
+            counts[int(medium['position'])] = int(medium['track_count'])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return counts
+
+
+def layout_verdict(hit: dict, disc_layout: dict[int, int]) -> Optional[bool]:
+    """
+    Whether the local vs musicbrainz per-disc track counts match.
+        - A disc can never hold more audio files than it has tracks on musicbrainz,
+            and a release can't have fewer discs than what is present locally.
+        - A musicbrainz release reporting more tracks/discs than found locally is plausible\
+            (a bonus DVD or data track never ripped as audio)
+
+    True if every disc counted is an exact fit, False if any is impossible, None otherwise.
+    """
+    if not disc_layout:
+        return None
+
+    hit_counts = hit_track_counts(hit)
+    if not hit_counts:
+        return None
+
+    max_disc = max(hit_counts)
+    known = exact_matches = 0
+    for disc_number, on_disk_count in disc_layout.items():
+        if disc_number > max_disc:
+            return False
+
+        hit_count = hit_counts.get(disc_number)
+        if hit_count is None:
+            continue
+        known += 1
+        if on_disk_count > hit_count:
+            return False
+        if on_disk_count == hit_count:
+            exact_matches += 1
+
+    if known == 0:
+        return None
+    return True if exact_matches == known else None
+
 
 ## Classes
 
@@ -260,6 +316,38 @@ def gather_haystack(
     return raw_folder.casefold(), normalize(raw_folder), folder_countries, folder_years
 
 
+def count_audio_files(directory: str) -> int:
+    try:
+        with os.scandir(directory) as entries:
+            return sum(
+                1 for e in entries
+                if e.is_file() and os.path.splitext(e.name)[1].lower() in AUDIO_EXTENSIONS
+            )
+    except OSError:
+        return 0
+
+
+def gather_disc_layout(item_dir: str, artist: Optional[str], album: Optional[str]) -> dict[int, int]:
+    """
+    Track count per disc number, counted from every sibling folder under `item_dir`'s parent
+    that look like a numbered disc (so, including discs not yet imported).
+    """
+    layout: dict[int, int] = {}
+    try:
+        siblings = list(os.scandir(os.path.dirname(item_dir)))
+    except OSError:
+        return layout
+
+    for entry in siblings:
+        if not entry.is_dir():
+            continue
+        is_disc, disc_number = looks_like_disc(entry.name, artist, album)
+        if is_disc and disc_number is not None:
+            layout[disc_number] = count_audio_files(entry.path)
+
+    return dict(sorted(layout.items()))
+
+
 def gather_needles(hit: dict) -> list[str]:
     """A hit's barcode/disambiguation/catalog-number values, deduplicated."""
     needles = []
@@ -284,15 +372,33 @@ def score_hits(
         folder_loose: str,
         folder_countries: set[str],
         folder_years: set[int],
+        disc_layout: Optional[dict[int, int]] = None,
         log=None,
     ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
     """
     Score hits against text/country/year by barcode/catalog/disambiguation coverage.
     Substring that recurs across several releases in the group: score divided by how many releases have it.
+    A release contradicted by non-matching `disc_layout` is vetoed. One that fully matches gets a bonus.
     Returns the unique best match's id (or None if none stands out), plus the full per-hit score.
     """
 
     logger = log or dummy_log
+
+    verdicts = [layout_verdict(hit, disc_layout) for hit in hits] if disc_layout else [None] * len(hits)
+    survivor_ids = {hit['id'] for hit, v in zip(hits, verdicts) if v is not False}
+    if not survivor_ids:
+        # On-disk track counts contradict every release in the group: data isn't trustworthy here
+        survivor_ids = {hit['id'] for hit in hits}
+        verdicts = [None] * len(hits)
+
+    if len(survivor_ids) == 1:
+        release_id = next(iter(survivor_ids))
+        logger.debug('{0!r} is the only release whose disc layout matches what is on disk', release_id)
+        scored = [
+            (hit['id'], LAYOUT_MATCH_BONUS if hit['id'] in survivor_ids else -1.0, '', False, False)
+            for hit in hits
+        ]
+        return release_id, scored
 
     hit_needles = [gather_needles(hit) for hit in hits]
     hit_looses = [{loose for v in needles if (loose := normalize(v))} for needles in hit_needles]
@@ -301,7 +407,11 @@ def score_hits(
         return sum(1 for looses in hit_looses if any(substring in loose for loose in looses))
 
     scored: list[Tuple[str, float, str, bool, bool]] = []
-    for hit, needles in zip(hits, hit_needles):
+    for hit, needles, verdict in zip(hits, hit_needles, verdicts):
+
+        if hit['id'] not in survivor_ids:
+            scored.append((hit['id'], -1.0, '', False, False))
+            continue
 
         text_score = 0.0
         matched_text = ''
@@ -318,6 +428,9 @@ def score_hits(
                 text_score = score
                 matched_text = matched
 
+        if verdict is True:
+            text_score += LAYOUT_MATCH_BONUS
+
         country_match = bool(hit.get('country')) and hit['country'] in folder_countries
 
         year = None
@@ -327,9 +440,9 @@ def score_hits(
         year_match = year is not None and year in folder_years
 
         logger.debug('  scoring {0} country={1!r} year={2} text_score={3:.2f} matched={4!r} '
-                  'country_match={5} year_match={6}',
+                  'country_match={5} year_match={6} layout_match={7}',
                   hit['id'], hit.get('country'), year, text_score, matched_text or None,
-                  country_match, year_match)
+                  country_match, year_match, verdict is True)
 
         scored.append((hit['id'], text_score, matched_text, country_match, year_match))
 
@@ -356,6 +469,7 @@ def score_hits(
 
     if len(matches) != 1:
         return None, scored
+    # TODO: Return all the good matches
 
     release_id = next(iter(matches))
     _, score, matched_text, country_match, year_match = next(s for s in scored if s[0] == release_id)
@@ -396,10 +510,15 @@ def resolve_release(
     folder_exact, folder_loose, folder_countries, folder_years = gather_haystack(
         item_dir, artist, album, check_cue, filenames
     )
-    logger.debug('{0} releases in group, folder hint = {1!r}, country code(s) = {2}, year(s) = {3}',
-              len(hits), folder_loose, folder_countries or None, folder_years or None)
 
-    return score_hits(hits, folder_exact, folder_loose, folder_countries, folder_years, logger)
+    is_disc, disc_number = looks_like_disc(os.path.basename(item_dir), artist, album)
+    disc_layout = gather_disc_layout(item_dir, artist, album) if is_disc and disc_number is not None else {}
+
+    logger.debug('{0} releases in group, folder hint = {1!r}, country code(s) = {2}, year(s) = {3}, '
+              'disc layout = {4}',
+              len(hits), folder_loose, folder_countries or None, folder_years or None, disc_layout or None)
+
+    return score_hits(hits, folder_exact, folder_loose, folder_countries, folder_years, disc_layout, logger)
 
 
 class CatalogHintPlugin(BeetsPlugin):
@@ -510,7 +629,7 @@ class CatalogHintPlugin(BeetsPlugin):
         """
         try:
             return mb.mb_api._browse(
-                'release', **{'release-group': release_group_id}, includes=['labels'], limit=100
+                'release', **{'release-group': release_group_id}, includes=['labels', 'media'], limit=100
             )
         except requests.exceptions.RequestException as e:
             raise MusicBrainzUnavailable(f'release-group {release_group_id}: {e}') from e
