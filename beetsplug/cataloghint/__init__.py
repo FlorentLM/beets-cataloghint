@@ -248,23 +248,32 @@ def score_hits(
     ) -> tuple[str | None, list[tuple[str, float, str, bool, bool]]]:
     """
     Score hits against text/country/year by barcode/catalog/disambiguation coverage.
+    Substring that recurs across several releases in the group: score divided by how many releases have it.
     Returns the unique best match's id (or None if none stands out), plus the full per-hit score.
     """
 
     logger = log or dummy_log
 
-    scored: list[tuple[str, float, str, bool, bool]] = []
-    for hit in hits:
-        needles = [hit.get('barcode') or '', hit.get('disambiguation') or '']
+    hit_needles = [gather_needles(hit) for hit in hits]
+    hit_looses = [{loose for v in needles if (loose := normalize(v))} for needles in hit_needles]
 
-        for label_info in hit.get('label_info', []):
-            if catno := label_info.get('catalog_number'):
-                needles.append(catno)
+    def commonality(substring: str) -> int:
+        return sum(1 for looses in hit_looses if any(substring in loose for loose in looses))
+
+    scored: list[tuple[str, float, str, bool, bool]] = []
+    for hit, needles in zip(hits, hit_needles):
 
         text_score = 0.0
         matched_text = ''
         for needle in needles:
             score, matched = match_score(needle, folder_exact, folder_loose)
+            if score <= 0:
+                continue
+
+            shared_by = commonality(normalize(matched))
+            if shared_by > 1:
+                score /= shared_by
+
             if score > text_score:
                 text_score = score
                 matched_text = matched
