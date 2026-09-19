@@ -7,6 +7,7 @@ from __future__ import annotations
 from beetsplug.cataloghint import (
     build_strip_pattern,
     gather_haystack,
+    gather_needles,
     match_score,
     score_hits,
 )
@@ -136,6 +137,22 @@ def test_score_hits_leaves_a_genuine_multi_way_tie_unresolved():
     release_id, scored = score_hits(hits, 'xyz-123', 'xyz123', set(), {2015})
     assert release_id is None
     assert len(scored) == 3
+
+
+def test_gather_needles_strips_barcode_leading_zeros():
+    # UPC-A vs EAN-13 vs GTIN-14 packaging pad the same code differently
+    assert gather_needles({'barcode': '00602557589924'}) == ['602557589924']
+    assert gather_needles({'barcode': '0602557589924'}) == ['602557589924']
+
+
+def test_score_hits_ties_releases_sharing_a_barcode_regardless_of_padding():
+    hits = [
+        {'id': 'a', 'barcode': '0602557589924'},
+        {'id': 'b', 'barcode': '00602557589924'},
+    ]
+    _, scored = score_hits(hits, '0602557589924', '0602557589924', set(), set())
+    scores = {release_id: score for release_id, score, *_ in scored}
+    assert scores['a'] == scores['b']
 
 
 def test_score_hits_weak_evidence_resolves_when_only_one_hit_qualifies():
