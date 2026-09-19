@@ -50,6 +50,7 @@ cataloghint:
     check_cue: yes
     check_sibling_discs: yes
     auto_apply: no
+    preferred_countries: []
 ```
 
 - **check_cue**: Look inside any `.cue` file found in the album folder for `TITLE`, `PERFORMER` and `CATALOG` hints.
@@ -57,6 +58,8 @@ cataloghint:
   same parent folder (matched by artist/album identity), instead of re-scoring from scratch.
 - **auto_apply**: When a release is uniquely resolved, apply it automatically instead of just
   forcing the recommendation to `strong`.
+- **preferred_countries**: MusicBrainz country codes in order of preference (for instance `[XE, JP, US]`), used
+  as last resort, to break a tie after all other evidence are exhausted.
 
 ## License
 
