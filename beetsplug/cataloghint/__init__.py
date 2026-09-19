@@ -17,7 +17,7 @@ import difflib
 import os
 import re
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 import requests
 from beets import plugins
 from beets.autotag import Recommendation
@@ -51,6 +51,16 @@ COUNTRY_CODE_ALIASES = {'UK': 'GB'}
 # An isolated 4-digit number: plausible as a release year (original, reissue/remaster, ...)
 YEAR_RE = re.compile(r"(?<!\d)(\d{4})(?!\d)")
 
+# Classic tokens found in disc-only folder names ("Disc 1", "CD2", "Bonus Disc", "B-Sides"...)
+# cd/disc/vinyl only count as a token if followed by a number
+DISC_TOKEN_RE = re.compile(
+    r"(?i)\b(?:cd|dis[ck]|vinyl)\s*\d{1,2}(?!\d)|\b(?:dvd|bonus|b-?sides?|remix(es)?|album|vol(?:ume)?|part|pt)(?![a-z])"
+)
+
+PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
+
+DISC_NAME_MAX_LEN = 10
+
 
 ## Custom error
 
@@ -80,6 +90,21 @@ def build_strip_pattern(value: str) -> re.Pattern | None:
         return None
     body = '|'.join(re.escape(t) for t in tokens)
     return re.compile(rf'(?i)(?<!\w)(?:{body})(?!\w)')
+
+
+def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[str] = None) -> bool:
+    """Whether `folder` looks like a single disc name (not a release folder)."""
+
+    if artist and (pattern := build_strip_pattern(artist)):
+        folder = pattern.sub(' ', folder)
+
+    if album and (pattern := build_strip_pattern(album)):
+        folder = pattern.sub(' ', folder)
+
+    folder = DISC_TOKEN_RE.sub(' ', folder)
+    folder = PUNCT_RE.sub('', folder).strip()
+
+    return len(folder) <= DISC_NAME_MAX_LEN
 
 
 def match_score(needle: str, haystack_exact: str, haystack_loose: str) -> tuple[float, str]:
@@ -168,21 +193,26 @@ dummy_log = DummyLog()
 
 def gather_haystack(
         item_dir: str,
-        artist: str | None,
-        album: str | None,
+        artist: Optional[str],
+        album: Optional[str],
         check_cue: bool = True,
         # TODO: Maybe check .log and .m3u files?
-        filenames: set[str] | None = None,
+        filenames: Optional[set[str]] = None,
     ) -> tuple[str, str, set[str], set[int]]:
     """
     Build the haystack: All the hints derived for `item_dir`, with the `artist`/`album`
-    stripped out of it.
+    stripped out of it. If the folder itself looks like a bare disc name, the parent
+    folder's name is folded in too.
 
     Returns two haystack forms: "exact" which only case-folds and "loose" which also strips
     punctuation/whitespace, and any bracketed country code(s) and plausible year(s) found.
     """
 
     raw_folder = os.path.basename(item_dir)
+
+    if looks_like_disc(raw_folder, artist, album):
+        if parent := os.path.basename(os.path.dirname(item_dir)):
+            raw_folder = f'{parent} {raw_folder}'
 
     if check_cue:
         cue_content = find_and_parse(item_dir, filenames=filenames)
@@ -295,10 +325,10 @@ def score_hits(
 def resolve_release(
         hits: list[dict],
         item_dir: str,
-        artist: str | None,
-        album: str | None,
+        artist: Optional[str],
+        album: Optional[str],
         check_cue: bool = True,
-        filenames: set[str] | None = None,
+        filenames: Optional[set[str]] = None,
         log=None,
     ) -> tuple[str | None, list[tuple[str, float, str, bool, bool]]]:
     """
