@@ -26,7 +26,7 @@ from beets.autotag import Recommendation
 from beets.importer.state import ImportState
 from beets.plugins import BeetsPlugin
 
-from beetsplug.cataloghint.cuefiles import find_and_parse
+from beetsplug.cataloghint.cuefiles import find_and_parse, has_cue
 
 if TYPE_CHECKING:
     from beets.autotag.match import AlbumMatch
@@ -47,9 +47,29 @@ NORMALIZE_RE = re.compile(r"[\W_]")     # strip punctuation/symbols/whitespace
 
 BRACKETED_RE = re.compile(r"[\[\(\{][^\[\]\(\)\{\}]*[\]\)\}]")
 
-# Country: only used if a bracket/parenthese/brace whole content is a 2-letter code (for instance "[US]")
-COUNTRY_BRACKET_RE = re.compile(r"[\[\(\{]\s*([A-Za-z]{2})\s*[\]\)\}]")
-COUNTRY_CODE_ALIASES = {'UK': 'GB'}
+# Country: only used if a bracket/parenthese/brace/dash-delimited whole token is a real MB area code
+COUNTRY_BRACKET_RE = re.compile(r"[-\[\(\{]\s*?([A-Za-z]{2}|USA)\s*?[-\]\)\}]")
+COUNTRY_CODE_ALIASES = {'UK': 'GB', 'USA': 'US'}
+COUNTRY_CODE_EXCLUDE = {'CD'}   # sorry Congo...
+COUNTRY_CODES_MB = {
+    'AF', 'AX', 'AL', 'DZ', 'AS', 'AD', 'AO', 'AI', 'AQ', 'AG', 'AR', 'AM', 'AW', 'AU', 'AT', 'AZ',
+    'BS', 'BH', 'BD', 'BB', 'BY', 'BE', 'BZ', 'BJ', 'BM', 'BT', 'BO', 'BQ', 'BA', 'BW', 'BV', 'BR',
+    'IO', 'VG', 'BN', 'BG', 'BF', 'BI', 'KH', 'CM', 'CA', 'CV', 'KY', 'CF', 'TD', 'CL', 'CN', 'CX',
+    'CC', 'CO', 'KM', 'CG', 'CK', 'CR', 'CI', 'HR', 'CU', 'CW', 'CY', 'CZ', 'XC', 'CD', 'DK', 'DJ',
+    'DM', 'DO', 'XG', 'EC', 'EG', 'SV', 'GQ', 'ER', 'EE', 'SZ', 'ET', 'XE', 'FK', 'FO', 'FM', 'FJ',
+    'FI', 'FR', 'GF', 'PF', 'TF', 'GA', 'GM', 'GE', 'DE', 'GH', 'GI', 'GR', 'GL', 'GD', 'GP', 'GU',
+    'GT', 'GG', 'GN', 'GW', 'GY', 'HT', 'HM', 'HN', 'HK', 'HU', 'IS', 'IN', 'ID', 'IR', 'IQ', 'IE',
+    'IM', 'IL', 'IT', 'JM', 'JP', 'JE', 'JO', 'KZ', 'KE', 'KI', 'XK', 'KW', 'KG', 'LA', 'LV', 'LB',
+    'LS', 'LR', 'LY', 'LI', 'LT', 'LU', 'MO', 'MG', 'MW', 'MY', 'MV', 'ML', 'MT', 'MH', 'MQ', 'MR',
+    'MU', 'YT', 'MX', 'MD', 'MC', 'MN', 'ME', 'MS', 'MA', 'MZ', 'MM', 'NA', 'NR', 'NP', 'NL', 'AN',
+    'NC', 'NZ', 'NI', 'NE', 'NG', 'NU', 'NF', 'MP', 'KP', 'MK', 'NO', 'OM', 'PK', 'PW', 'PS', 'PA',
+    'PG', 'PY', 'PE', 'PH', 'PN', 'PL', 'PT', 'PR', 'QA', 'RE', 'RO', 'RU', 'RW', 'BL', 'SH', 'KN',
+    'LC', 'MF', 'PM', 'VC', 'WS', 'SM', 'ST', 'SA', 'SN', 'RS', 'CS', 'SC', 'SL', 'SG', 'SX', 'SK',
+    'SI', 'SB', 'SO', 'ZA', 'GS', 'KR', 'SS', 'SU', 'ES', 'LK', 'SD', 'SR', 'SJ', 'SE', 'CH', 'SY',
+    'TW', 'TJ', 'TZ', 'TH', 'TL', 'TG', 'TK', 'TO', 'TT', 'TN', 'TR', 'TM', 'TC', 'TV', 'UG', 'UA',
+    'AE', 'GB', 'US', 'UM', 'UY', 'VI', 'UZ', 'VU', 'VA', 'VE', 'VN', 'WF', 'EH', 'XW', 'YE', 'YU',
+    'ZM', 'ZW',
+}
 
 # An isolated 4-digit number: plausible as a release year (original, reissue/remaster, ...)
 YEAR_RE = re.compile(r"(?<!\d)(\d{4})(?!\d)")
@@ -74,6 +94,22 @@ PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
 DISC_NAME_MAX_LEN = 10
 
 AUDIO_EXTENSIONS = {f'.{ext}' for ext in mediafile.TYPES}
+
+# MusicBrainz medium formats
+CD_FORMATS = frozenset({
+    'CD', 'CD-R', 'Data CD', 'Enhanced CD', 'Copy Control CD', 'HDCD', 'DTS CD', 'Mixed Mode CD', 'HQCD', 'CD+G',
+    'SHM-CD', 'Blu-spec CD', 'SACD', 'Hybrid SACD', 'SHM-SACD', 'DualDisc', 'CD-LE', '8cm CD', 'Minimax CD', '8cm CD+G',
+    'MiniDisc', 'Blu-ray', 'Blu-ray-R', 'VCD'
+})
+VINYL_FORMATS = frozenset({'Vinyl', '7" Vinyl', '10" Vinyl', '12" Vinyl', 'Flexi-disc', '7" Flexi-disc', '12" Flexi-disc'})
+DIGITAL_FORMATS = frozenset({'Digital Media', 'Download Card'})
+CASSETTE_FORMATS = frozenset({'Cassette', 'Microcassette', 'VHS'})
+DVD_FORMATS = frozenset({'DVD', 'DVD-Audio', 'DVD-Video', 'HD-DVD'})
+
+MEDIA_HINT_RE = re.compile(r'(?i)\b(cd|vinyl|web|cassette|dvd)\b')
+MEDIA_HINT_FORMATS: dict[str, frozenset[str]] = {
+    'cd': CD_FORMATS, 'vinyl': VINYL_FORMATS, 'web': DIGITAL_FORMATS, 'cassette': CASSETTE_FORMATS, 'dvd': DVD_FORMATS,
+}
 
 
 ## Custom error
@@ -189,6 +225,13 @@ def extract_years(text: str) -> set[int]:
         if 1800 <= (year := int(match)) <= current_year + 1
     }
 
+
+def extract_media_hint(text: str) -> Optional[frozenset[str]]:
+    """The medium format (CD/Vinyl/WEB/Cassette) if unambiguous."""
+    buckets = {MEDIA_HINT_FORMATS[m.group(1).lower()] for m in MEDIA_HINT_RE.finditer(text)}
+    return next(iter(buckets)) if len(buckets) == 1 else None
+
+
 def hit_track_counts(hit: dict) -> dict[int, int]:
     """A MusicBrainz release's track count, per disc."""
     counts = {}
@@ -237,6 +280,24 @@ def layout_verdict(hit: dict, disc_layout: dict[int, int]) -> Optional[bool]:
     return True if exact_matches == known else None
 
 
+def hit_formats(hit: dict) -> set[str]:
+    """A MusicBrainz release's medium formats."""
+    return {medium['format'] for medium in hit.get('media') or [] if medium.get('format')}
+
+
+def format_veto(hit: dict, target_formats: frozenset[str]) -> bool:
+    """True if none of this release's media are a format in `target_formats`."""
+    formats = hit_formats(hit)
+    return bool(formats) and formats.isdisjoint(target_formats)
+
+
+def hit_year(hit: dict) -> Optional[int]:
+    """A MusicBrainz release's year."""
+    if match := YEAR_RE.match(str(hit.get('date') or '')):
+        return int(match.group(1))
+    return None
+
+
 ## Classes
 
 class TaskLog:
@@ -275,14 +336,15 @@ def gather_haystack(
         check_cue: bool = True,
         # TODO: Maybe check .log and .m3u files?
         filenames: Optional[set[str]] = None,
-    ) -> Tuple[str, str, set[str], set[int]]:
+    ) -> Tuple[str, str, set[str], set[int], Optional[frozenset[str]]]:
     """
     Build the haystack: All the hints derived for `item_dir`, with the `artist`/`album`
     stripped out of it. If the folder itself looks like a bare disc name, the parent
     folder's name is folded in too.
 
     Returns two haystack forms: "exact" which only case-folds and "loose" which also strips
-    punctuation/whitespace, and any bracketed country code(s) and plausible year(s) found.
+    punctuation/whitespace, any bracketed country code(s) and plausible year(s) found, and the
+    medium format (CD/Vinyl/Digital/Cassette).
     """
 
     raw_folder = os.path.basename(item_dir)
@@ -301,10 +363,11 @@ def gather_haystack(
             if (catalog := cue_content.get('CATALOG')) and CATALOG_RE.match(str(catalog).strip()):
                 raw_folder += ' ' + str(catalog)
 
-    # Country codes (only bracketed 2-letter codes are considered)
+    # Country codes: only bracket/dash-delimited tokens that are real MB area codes (excluding "CD")
     folder_countries = {
-        COUNTRY_CODE_ALIASES.get(code.upper(), code.upper())
-        for code in COUNTRY_BRACKET_RE.findall(raw_folder)
+        aliased for code in COUNTRY_BRACKET_RE.findall(raw_folder)
+        if (aliased := COUNTRY_CODE_ALIASES.get(code.upper(), code.upper())) in COUNTRY_CODES_MB
+        and aliased not in COUNTRY_CODE_EXCLUDE
     }
 
     for known in (artist, album):
@@ -312,8 +375,9 @@ def gather_haystack(
             raw_folder = strip_outside_brackets(raw_folder, pattern)
 
     folder_years = extract_years(raw_folder)
+    media_hint = extract_media_hint(raw_folder)
 
-    return raw_folder.casefold(), normalize(raw_folder), folder_countries, folder_years
+    return raw_folder.casefold(), normalize(raw_folder), folder_countries, folder_years, media_hint
 
 
 def count_audio_files(directory: str) -> int:
@@ -373,12 +437,15 @@ def score_hits(
         folder_countries: set[str],
         folder_years: set[int],
         disc_layout: Optional[dict[int, int]] = None,
+        target_formats: Optional[frozenset[str]] = None,
         log=None,
     ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
     """
     Score hits against text/country/year by barcode/catalog/disambiguation coverage.
     Substring that recurs across several releases in the group: score divided by how many releases have it.
-    A release contradicted by non-matching `disc_layout` is vetoed. One that fully matches gets a bonus.
+    A release contradicted by non-matching disc layout or target format is vetoed. One with fully matching disc layout gets a bonus.
+    A text match that's shared with another release in the group (a reused disambiguation label, for instance) is
+    weak evidence: a differently-dated survivor whose year matches an explicit folder year outranks it instead.
     Returns the unique best match's id (or None if none stands out), plus the full per-hit score.
     """
 
@@ -391,9 +458,14 @@ def score_hits(
         survivor_ids = {hit['id'] for hit in hits}
         verdicts = [None] * len(hits)
 
+    if target_formats:
+        format_survivors = {hit['id'] for hit in hits if not format_veto(hit, target_formats)}
+        if format_survivors:
+            survivor_ids = survivor_ids & format_survivors or format_survivors
+
     if len(survivor_ids) == 1:
         release_id = next(iter(survivor_ids))
-        logger.debug('{0!r} is the only release whose disc layout matches what is on disk', release_id)
+        logger.debug('{0!r} is the only release left after the disc-layout/medium-format checks', release_id)
         scored = [
             (hit['id'], LAYOUT_MATCH_BONUS if hit['id'] in survivor_ids else -1.0, '', False, False)
             for hit in hits
@@ -407,6 +479,7 @@ def score_hits(
         return sum(1 for looses in hit_looses if any(substring in loose for loose in looses))
 
     scored: list[Tuple[str, float, str, bool, bool]] = []
+    diluted_ids: set[str] = set()
     for hit, needles, verdict in zip(hits, hit_needles, verdicts):
 
         if hit['id'] not in survivor_ids:
@@ -415,6 +488,7 @@ def score_hits(
 
         text_score = 0.0
         matched_text = ''
+        diluted = False
         for needle in needles:
             score, matched = match_score(needle, folder_exact, folder_loose)
             if score <= 0:
@@ -427,16 +501,17 @@ def score_hits(
             if score > text_score:
                 text_score = score
                 matched_text = matched
+                diluted = shared_by > 1
+
+        if diluted:
+            diluted_ids.add(hit['id'])
 
         if verdict is True:
             text_score += LAYOUT_MATCH_BONUS
 
         country_match = bool(hit.get('country')) and hit['country'] in folder_countries
 
-        year = None
-        if match := YEAR_RE.match(str(hit.get('date') or '')):
-            year = int(match.group(1))
-
+        year = hit_year(hit)
         year_match = year is not None and year in folder_years
 
         logger.debug('  scoring {0} country={1!r} year={2} text_score={3:.2f} matched={4!r} '
@@ -466,6 +541,13 @@ def score_hits(
             release_id for release_id, _, _, country_match, year_match in scored
             if country_match or year_match
         }
+
+    if len(matches) == 1 and next(iter(matches)) in diluted_ids:
+        # The unique winner only got there on a disambiguation label reused by another release: weak evidence
+        # If exactly one survivor has a year that fits, prefer that one
+        year_matches = {release_id for release_id, _, _, _, year_match in scored if year_match}
+        if len(year_matches) == 1 and year_matches != matches:
+            matches = year_matches
 
     if len(matches) != 1:
         return None, scored
@@ -507,18 +589,27 @@ def resolve_release(
         logger.debug('only release in this release-group, trusting it: {0!r}', hits[0]['id'])
         return hits[0]['id'], []
 
-    folder_exact, folder_loose, folder_countries, folder_years = gather_haystack(
+    folder_exact, folder_loose, folder_countries, folder_years, media_hint = gather_haystack(
         item_dir, artist, album, check_cue, filenames
     )
 
     is_disc, disc_number = looks_like_disc(os.path.basename(item_dir), artist, album)
     disc_layout = gather_disc_layout(item_dir, artist, album) if is_disc and disc_number is not None else {}
 
-    logger.debug('{0} releases in group, folder hint = {1!r}, country code(s) = {2}, year(s) = {3}, '
-              'disc layout = {4}',
-              len(hits), folder_loose, folder_countries or None, folder_years or None, disc_layout or None)
+    # A cue file is evidence of a CD-like medium
+    hinted_formats = {media_hint} if media_hint else set()
+    if check_cue and has_cue(item_dir):
+        hinted_formats.add(CD_FORMATS)
+    target_formats = next(iter(hinted_formats)) if len(hinted_formats) == 1 else None
 
-    return score_hits(hits, folder_exact, folder_loose, folder_countries, folder_years, disc_layout, logger)
+    logger.debug('{0} releases in group, folder hint = {1!r}, country code(s) = {2}, year(s) = {3}, '
+              'disc layout = {4}, target medium = {5}',
+              len(hits), folder_loose, folder_countries or None, folder_years or None,
+              disc_layout or None, sorted(target_formats) if target_formats else None)
+
+    return score_hits(
+        hits, folder_exact, folder_loose, folder_countries, folder_years, disc_layout, target_formats, logger
+    )
 
 
 class CatalogHintPlugin(BeetsPlugin):

@@ -1,8 +1,7 @@
 import os
 import re
 from pathlib import Path
-from typing import Iterable, Optional, Union
-
+from typing import Iterable, Optional, Union, List
 
 # A cue command is a single all-caps token followed by its value
 CUE_RE = re.compile(r"^\s*([A-Z_]+)\s+(.*)$")
@@ -73,6 +72,11 @@ def parse_cue(path: Path) -> dict:
                 target[key] = value
 
     return album
+
+
+def has_cue(directory: Union[str, os.PathLike]) -> bool:
+    """Whether `directory` contains a .cue file anywhere under it."""
+    return next(Path(directory).glob('**/*.cue'), None) is not None
 
 
 def find_and_parse(
