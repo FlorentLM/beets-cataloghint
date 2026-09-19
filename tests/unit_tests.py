@@ -7,13 +7,20 @@ from __future__ import annotations
 import os
 
 from beetsplug.cataloghint import (
+    CASSETTE_FORMATS,
+    CD_FORMATS,
+    DIGITAL_FORMATS,
+    VINYL_FORMATS,
     build_strip_pattern,
+    extract_media_hint,
+    format_veto,
     gather_disc_layout,
     gather_haystack,
     gather_needles,
     match_score,
     score_hits,
 )
+from beetsplug.cataloghint.cuefiles import has_cue
 
 
 def test_match_score_prefers_exact_catalog_over_partial_overlap():
@@ -47,7 +54,7 @@ def test_build_strip_pattern_is_word_bounded():
 
 
 def test_folder_hint_strips_known_artist_and_album_but_keeps_other_signal():
-    folder_exact, folder_loose, countries, years = gather_haystack(
+    folder_exact, folder_loose, countries, years, _ = gather_haystack(
         item_dir="/x/Kyuss - 1992 - Blues For The Red Sun {DALI 61340-2} [FLAC]",
         artist="Kyuss",
         album="Blues For The Red Sun",
@@ -64,10 +71,10 @@ def test_folder_hint_keeps_bracketed_disambiguation_even_with_a_dirty_album_tag(
     #  -> Stripping the whole of the tag must not also wipe the bracket's contents
 
     item_dir = "/x/Some Artist - Foo Album {2016 Deluxe Ed.}"
-    clean_exact, clean_loose, _, clean_years = gather_haystack(
+    clean_exact, clean_loose, _, clean_years, _ = gather_haystack(
         item_dir, artist="Some Artist", album="Foo Album", check_cue=False,
     )
-    dirty_exact, dirty_loose, _, dirty_years = gather_haystack(
+    dirty_exact, dirty_loose, _, dirty_years, _ = gather_haystack(
         item_dir, artist="Some Artist", album="Foo Album {2016 Deluxe Ed.}", check_cue=False,
     )
     assert 'deluxe' in clean_loose and 'deluxe' in dirty_loose
@@ -75,7 +82,7 @@ def test_folder_hint_keeps_bracketed_disambiguation_even_with_a_dirty_album_tag(
 
 
 def test_folder_hint_extracts_bracketed_country_code():
-    _, _, countries, _ = gather_haystack(
+    _, _, countries, _, _ = gather_haystack(
         item_dir="/x/Some Artist - Some Album [US]",
         artist="Some Artist",
         album="Some Album",
@@ -85,7 +92,7 @@ def test_folder_hint_extracts_bracketed_country_code():
 
 
 def test_folder_hint_aliases_uk_to_gb():
-    _, _, countries, _ = gather_haystack(
+    _, _, countries, _, _ = gather_haystack(
         item_dir="/x/Some Artist - Some Album [UK]",
         artist="Some Artist",
         album="Some Album",
@@ -140,6 +147,33 @@ def test_score_hits_leaves_a_genuine_multi_way_tie_unresolved():
     release_id, scored = score_hits(hits, 'xyz-123', 'xyz123', set(), {2015})
     assert release_id is None
     assert len(scored) == 3
+
+
+def test_score_hits_prefers_year_match_over_a_disambiguation_shared_with_another_release():
+    # "deluxe edition" is reused by a wrong year and a wrong format
+    #   -> weak evidence. 'correct' has no disambiguation at all, but matches format and year
+    hits = [
+        {'id': 'wrong_year', 'date': '2009', 'disambiguation': 'deluxe edition', 'media': _media(8, 9)},
+        {'id': 'vinyl', 'date': '2016', 'disambiguation': 'deluxe edition',
+         'media': [{'position': 1, 'track_count': 8, 'format': 'Vinyl'}, {'position': 2, 'track_count': 9, 'format': 'Vinyl'}]},
+        {'id': 'correct', 'date': '2016', 'disambiguation': '', 'media': _media(8, 9)},
+    ]
+    release_id, _ = score_hits(
+        hits, '2016 deluxe ed', '2016deluxeed', set(), {2016},
+        disc_layout={1: 8, 2: 9}, target_formats=CD_FORMATS,
+    )
+    assert release_id == 'correct'
+
+
+def test_score_hits_unique_text_match_still_wins_despite_a_different_years_match():
+    # 'strong_match's catalog number is exact *and unshared*
+    #   -> Beats a year-only match
+    hits = [
+        {'id': 'strong_match', 'date': '2010', 'label_info': [{'catalog_number': '0602527463841'}]},
+        {'id': 'year_only', 'date': '2000'},
+    ]
+    release_id, _ = score_hits(hits, '0602527463841', '0602527463841', set(), {2000})
+    assert release_id == 'strong_match'
 
 
 def test_gather_needles_strips_barcode_leading_zeros():
@@ -245,3 +279,75 @@ def test_score_hits_ignores_disc_layout_contradicting_every_release():
     release_id, scored = score_hits(hits, '', '', set(), set(), {1: 12})
     assert release_id is None
     assert all(score >= 0 for _, score, *_ in scored)
+
+
+def test_format_veto_flags_a_release_with_no_medium_in_the_target_formats():
+    vinyl_only = {'id': 'a', 'media': [{'format': 'Vinyl'}]}
+    cd = {'id': 'b', 'media': [{'format': 'CD'}]}
+    assert format_veto(vinyl_only, CD_FORMATS) is True
+    assert format_veto(cd, CD_FORMATS) is False
+
+
+def test_score_hits_target_format_vetoes_a_vinyl_release():
+    hits = [
+        {'id': 'cd', 'media': [{'format': 'CD'}]},
+        {'id': 'vinyl', 'media': [{'format': 'Vinyl'}]},
+    ]
+    release_id, scored = score_hits(hits, '', '', set(), set(), target_formats=CD_FORMATS)
+    assert release_id == 'cd'
+    assert dict((rid, score) for rid, score, *_ in scored)['vinyl'] == -1.0
+
+
+def test_score_hits_ignores_target_format_when_it_contradicts_every_release():
+    # Every release in the group is vinyl or cassette
+    #   -> Target isn't trustworthy, veto dropped
+    hits = [
+        {'id': 'a', 'media': [{'format': 'Vinyl'}]},
+        {'id': 'b', 'media': [{'format': 'Cassette'}]},
+    ]
+    release_id, scored = score_hits(hits, '', '', set(), set(), target_formats=CD_FORMATS)
+    assert release_id is None
+    assert all(score >= 0 for _, score, *_ in scored)
+
+
+def test_has_cue_finds_a_cue_file_anywhere_under_the_directory(tmp_path):
+    assert has_cue(tmp_path) is False
+    (tmp_path / "album.cue").write_text("")
+    assert has_cue(tmp_path) is True
+
+
+def test_extract_media_hint_recognizes_each_keyword():
+    assert extract_media_hint("Artist - Album [Vinyl]") == VINYL_FORMATS
+    assert extract_media_hint("Artist - Album [WEB]") == DIGITAL_FORMATS
+    assert extract_media_hint("Artist - Album [CD]") == CD_FORMATS
+    assert extract_media_hint("Artist - Album [Cassette]") == CASSETTE_FORMATS
+    assert extract_media_hint("Artist - Album [FLAC]") is None
+
+
+def test_extract_media_hint_is_none_on_conflicting_keywords():
+    # "CD" and "Vinyl" both present
+    #   -> Ambiguous
+    assert extract_media_hint("Artist - Album [CD+Vinyl bundle]") is None
+
+
+def test_gather_haystack_detects_media_hint_after_stripping_artist_and_album():
+    # The album title contains "Cassette". Without stripping it first, it would
+    # collide with the "[Vinyl Reissue]" tag and make the hint ambiguous
+    _, _, _, _, media_hint = gather_haystack(
+        item_dir="/x/Artist - Cassette Tape Dreams [Vinyl Reissue]",
+        artist="Artist",
+        album="Cassette Tape Dreams",
+        check_cue=False,
+    )
+    assert media_hint == VINYL_FORMATS
+
+
+def test_folder_hint_excludes_cd_from_country_codes():
+    # "CD" is a real MB area code (Congo), but in a folder name we consider it is Compact Disc
+    _, _, countries, _, _ = gather_haystack(
+        item_dir="/x/Some Artist - Some Album [CD]",
+        artist="Some Artist",
+        album="Some Album",
+        check_cue=False,
+    )
+    assert countries == set()
