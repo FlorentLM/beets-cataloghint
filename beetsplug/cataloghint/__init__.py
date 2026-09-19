@@ -238,6 +238,24 @@ def gather_haystack(
     return raw_folder.casefold(), normalize(raw_folder), folder_countries, folder_years
 
 
+def gather_needles(hit: dict) -> list[str]:
+    """A hit's barcode/disambiguation/catalog-number values, deduplicated."""
+    needles = []
+    if barcode := hit.get('barcode'):
+        # UPC-A/EAN-13/GTIN-14 pad the same code with leading zeros, ignore that
+        needles.append(barcode.lstrip('0') or barcode)
+    if disambiguation := hit.get('disambiguation'):
+        needles.append(disambiguation)
+
+    seen = set()
+    for label_info in hit.get('label_info', []):
+        if (catno := label_info.get('catalog_number')) and (key := normalize(catno)) not in seen:
+            seen.add(key)
+            needles.append(catno)
+
+    return needles
+
+
 def score_hits(
         hits: list[dict],
         folder_exact: str,
