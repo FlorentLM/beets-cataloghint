@@ -17,7 +17,7 @@ import difflib
 import os
 import re
 from datetime import date
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Tuple
 import requests
 from beets import plugins
 from beets.autotag import Recommendation
@@ -92,7 +92,7 @@ def build_strip_pattern(value: str) -> re.Pattern | None:
     return re.compile(rf'(?i)(?<!\w)(?:{body})(?!\w)')
 
 
-def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[str] = None) -> bool:
+def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[str] = None) -> Tuple[bool, Optional[int]]:
     """Whether `folder` looks like a single disc name (not a release folder)."""
 
     if artist and (pattern := build_strip_pattern(artist)):
@@ -101,13 +101,21 @@ def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[s
     if album and (pattern := build_strip_pattern(album)):
         folder = pattern.sub(' ', folder)
 
+    numbers = [int(n) for x in re.finditer(DISC_TOKEN_RE, folder) for n in re.findall(r'\d+', x.group())]
+
     folder = DISC_TOKEN_RE.sub(' ', folder)
     folder = PUNCT_RE.sub('', folder).strip()
 
-    return len(folder) <= DISC_NAME_MAX_LEN
+    if not len(folder) <= DISC_NAME_MAX_LEN:
+        return False, None
+
+    if len(numbers) == 1:
+        return True, numbers[0]
+
+    return True, None
 
 
-def match_score(needle: str, haystack_exact: str, haystack_loose: str) -> tuple[float, str]:
+def match_score(needle: str, haystack_exact: str, haystack_loose: str) -> Tuple[float, str]:
     """
     How well `needle` (a release's barcode/catalog/disambiguation string) is covered by the
     haystack (stuff found in the folder name / cue file), as a score in [0, 2].
@@ -198,7 +206,7 @@ def gather_haystack(
         check_cue: bool = True,
         # TODO: Maybe check .log and .m3u files?
         filenames: Optional[set[str]] = None,
-    ) -> tuple[str, str, set[str], set[int]]:
+    ) -> Tuple[str, str, set[str], set[int]]:
     """
     Build the haystack: All the hints derived for `item_dir`, with the `artist`/`album`
     stripped out of it. If the folder itself looks like a bare disc name, the parent
@@ -210,7 +218,8 @@ def gather_haystack(
 
     raw_folder = os.path.basename(item_dir)
 
-    if looks_like_disc(raw_folder, artist, album):
+    is_disc, disc_number = looks_like_disc(raw_folder, artist, album)
+    if is_disc:
         if parent := os.path.basename(os.path.dirname(item_dir)):
             raw_folder = f'{parent} {raw_folder}'
 
@@ -263,7 +272,7 @@ def score_hits(
         folder_countries: set[str],
         folder_years: set[int],
         log=None,
-    ) -> tuple[str | None, list[tuple[str, float, str, bool, bool]]]:
+    ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
     """
     Score hits against text/country/year by barcode/catalog/disambiguation coverage.
     Substring that recurs across several releases in the group: score divided by how many releases have it.
@@ -278,7 +287,7 @@ def score_hits(
     def commonality(substring: str) -> int:
         return sum(1 for looses in hit_looses if any(substring in loose for loose in looses))
 
-    scored: list[tuple[str, float, str, bool, bool]] = []
+    scored: list[Tuple[str, float, str, bool, bool]] = []
     for hit, needles in zip(hits, hit_needles):
 
         text_score = 0.0
@@ -357,7 +366,7 @@ def resolve_release(
         check_cue: bool = True,
         filenames: Optional[set[str]] = None,
         log=None,
-    ) -> tuple[str | None, list[tuple[str, float, str, bool, bool]]]:
+    ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
     """
     Pick the release in `hits` (from a given release-group) that the hints point to.
 
@@ -497,7 +506,7 @@ class CatalogHintPlugin(BeetsPlugin):
             hits: list[dict],
             task: ImportTask,
             log: TaskLog
-        ) -> tuple[str | None, list[tuple[str, float, str, bool, bool]]]:
+        ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
 
         item_dir = os.path.dirname(os.fsdecode(task.items[0].path))
         filenames = {os.path.basename(os.fsdecode(item.path)) for item in task.items}
@@ -509,7 +518,7 @@ class CatalogHintPlugin(BeetsPlugin):
 
     def _flag_if_outscored(self,
             task: ImportTask,
-            scored: list[tuple[str, float, str, bool, bool]],
+            scored: list[Tuple[str, float, str, bool, bool]],
             log: TaskLog
         ) -> None:
         """
@@ -540,7 +549,7 @@ class CatalogHintPlugin(BeetsPlugin):
             task: ImportTask,
             release_id: str,
             parent_dir: str,
-            identity: tuple[str, str],
+            identity: Tuple[str, str],
             log: TaskLog
         ) -> AlbumMatch | None:
         """
