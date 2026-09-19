@@ -4,8 +4,11 @@ No network, no fixture folders needed.
 """
 from __future__ import annotations
 
+import os
+
 from beetsplug.cataloghint import (
     build_strip_pattern,
+    gather_disc_layout,
     gather_haystack,
     gather_needles,
     match_score,
@@ -166,3 +169,79 @@ def test_score_hits_weak_evidence_resolves_when_only_one_hit_qualifies():
     ]
     release_id, _ = score_hits(hits, '', '', {'GB'}, set())
     assert release_id == 'b'
+
+
+def _media(*track_counts):
+    return [{'position': i + 1, 'track_count': n} for i, n in enumerate(track_counts)]
+
+
+def test_gather_disc_layout_counts_audio_files_per_sibling_disc_folder(tmp_path):
+    parent = tmp_path / "Some Album"
+    disc1, disc2, extras = parent / "Disc 1", parent / "Disc 2", parent / "Scans"
+    for d in (disc1, disc2, extras):
+        d.mkdir(parents=True)
+    for i in range(3):
+        (disc1 / f"track{i}.flac").write_bytes(b'')
+    for i in range(2):
+        (disc2 / f"track{i}.mp3").write_bytes(b'')
+    (extras / "cover.jpg").write_bytes(b'')
+
+    layout = gather_disc_layout(str(disc1), artist=None, album=None)
+    assert layout == {1: 3, 2: 2}
+
+
+def test_score_hits_disc_layout_uniquely_resolves_release_with_no_text_evidence():
+    # Disc 1 has 12 tracks and disc 2 has 8. Only one release matches both.
+    hits = [
+        {'id': 'a', 'media': _media(12, 8)},
+        {'id': 'b', 'media': _media(12, 9)},
+    ]
+    release_id, _ = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
+    assert release_id == 'a'
+
+
+def test_score_hits_disc_layout_vetoes_a_release_that_cannot_hold_what_is_on_disk():
+    # Disc 2 has 9 tracks, 'c' reports only 8 for that disc -> Impossible
+    hits = [
+        {'id': 'a', 'media': _media(12, 9), 'country': 'US'},
+        {'id': 'b', 'media': _media(12, 9), 'country': 'GB'},
+        {'id': 'c', 'media': _media(12, 8), 'country': 'US'},
+    ]
+    release_id, scored = score_hits(hits, '', '', {'GB'}, set(), {1: 12, 2: 9})
+    assert release_id == 'b'
+    assert dict((rid, score) for rid, score, *_ in scored)['c'] == -1.0
+
+
+def test_score_hits_does_not_veto_a_release_reporting_more_tracks_than_found():
+    # 'b' claims 11 tracks on disc 2 (e.g. bonus DVD track never ripped as audio)
+    #   -> Possible, just not confirmed as an exact fit
+    #   -> 'a' still wins becaue it exact matches
+    hits = [
+        {'id': 'a', 'media': _media(12, 8)},
+        {'id': 'b', 'media': _media(12, 11)},
+    ]
+    release_id, scored = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
+    assert release_id == 'a'
+    assert dict((rid, score) for rid, score, *_ in scored)['b'] != -1.0
+
+
+def test_score_hits_disc_layout_vetoes_a_release_with_too_few_discs():
+    # Found "Disc 2" locally. 'b' is single-disc release -> Impossible
+    hits = [
+        {'id': 'a', 'media': _media(12, 8)},
+        {'id': 'b', 'media': _media(12)},
+    ]
+    release_id, scored = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
+    assert release_id == 'a'
+    assert dict((rid, score) for rid, score, *_ in scored)['b'] == -1.0
+
+
+def test_score_hits_ignores_disc_layout_contradicting_every_release():
+    # Local track counts disagree with all candidates -> Data is not trustworthy, veto dropped
+    hits = [
+        {'id': 'a', 'media': _media(5)},
+        {'id': 'b', 'media': _media(3)},
+    ]
+    release_id, scored = score_hits(hits, '', '', set(), set(), {1: 12})
+    assert release_id is None
+    assert all(score >= 0 for _, score, *_ in scored)
