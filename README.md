@@ -13,7 +13,9 @@ disambiguation text, country, year) and, when it can, picks the exact release fo
 ## What it does
 
 - **Exactly one release stands out**: Picked, and recommendation forced to `strong`
-- **None stands out, but beets' top pick scores _worse_ other release(s) in the same group**: Recommendation forced to `none`
+- **Several releases are tied (same barcode/catalog/year etc., nothing to differentiate them)**: beets' candidate
+  list is narrowed to just those releases, and beets' distance scoring ranks and recommends between them.
+- **None stands out, but beets' top pick scores _worse_ than other release(s) in the same group**: Recommendation forced to `none`
 - **A disc under a parent folder whose sibling disc(s) already resolved as a multi-disc release**: New disc is matched to that same release, as long as it still fits within the release's remaining
   multi-disc track count.
 
@@ -58,7 +60,7 @@ cataloghint:
   same parent folder (matched by artist/album identity), instead of re-scoring from scratch.
 - **auto_apply**: When a release is uniquely resolved, apply it automatically instead of just
   forcing the recommendation to `strong`.
-- **preferred_countries**: MusicBrainz country codes in order of preference (for instance `[XE, JP, US]`), used
+- **preferred_countries**: MusicBrainz country codes in order of preference (for instance `[XW, XE, JP, US]`), used
   as last resort, to break a tie after all other evidence are exhausted.
 
 ## License
