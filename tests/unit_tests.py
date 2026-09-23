@@ -5,6 +5,9 @@ No network, no fixture folders needed.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
+
+from beets.autotag.distance import Distance
 
 from beetsplug.cataloghint import (
     CASSETTE_FORMATS,
@@ -12,11 +15,13 @@ from beetsplug.cataloghint import (
     DIGITAL_FORMATS,
     VINYL_FORMATS,
     build_strip_pattern,
+    core_distance,
     extract_media_hint,
     format_veto,
     gather_disc_layout,
     gather_haystack,
     gather_needles,
+    is_plausible,
     match_score,
     validate_preferred_countries,
     score_hits,
@@ -389,3 +394,28 @@ def test_folder_hint_excludes_cd_from_country_codes():
         check_cue=False,
     )
     assert countries == set()
+
+
+def _album_distance(artist_penalty, track_penalties, missing=0, unmatched=0):
+    dist = Distance()
+    dist.add('artist', artist_penalty)
+    dist.add('album', 0.0)
+    for penalty in track_penalties:
+        dist.add('tracks', penalty)
+    for _ in range(missing):
+        dist.add('missing_tracks', 1.0)
+    for _ in range(unmatched):
+        dist.add('unmatched_tracks', 1.0)
+    return dist
+
+
+def test_is_plausible_rejects_same_title_album_by_another_artist():
+    dist = _album_distance(1.0, [0.6] * 11, unmatched=1)   # Jamie xx - In Waves vs In Waves - In Waves
+    assert not is_plausible(SimpleNamespace(distance=dist), 0.25)
+
+
+def test_is_plausible_accepts_partial_disc_despite_missing_tracks():
+    dist = _album_distance(0.0, [0.02] * 10, missing=30)
+    assert dist.distance > 0.25
+    assert core_distance(dist) < 0.05
+    assert is_plausible(SimpleNamespace(distance=dist), 0.25)

@@ -21,7 +21,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Optional, Tuple
 import mediafile
 import requests
-from beets import plugins
+from beets import config, plugins
 from beets.autotag import Recommendation
 from beets.importer.state import ImportState
 from beets.plugins import BeetsPlugin
@@ -29,6 +29,7 @@ from beets.plugins import BeetsPlugin
 from beetsplug.cataloghint.cuefiles import find_and_parse, has_cue
 
 if TYPE_CHECKING:
+    from beets.autotag.distance import Distance
     from beets.autotag.match import AlbumMatch
     from beets.importer import ImportSession, ImportTask
     from beetsplug.musicbrainz import MusicBrainzPlugin
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
 ## Configs
 
 MIN_OVERLAP = 5     # below this, a (non-year) shared digit run is more likely coincidence
+PARTIAL_DISC_PENALTIES = {'missing_tracks'}     # penalties a partial disc incurs
 LAYOUT_MATCH_BONUS = 2.5     # > than max match_score (2.0): a multi-disc layout match beats text matches   # TODO: Tune this?
 
 
@@ -318,6 +320,23 @@ def hit_year(hit: dict) -> Optional[int]:
     if match := YEAR_RE.match(str(hit.get('date') or '')):
         return int(match.group(1))
     return None
+
+
+def core_distance(dist: Distance) -> float:
+    """Beets' distance (ignoring penalties a partial disc legitimately has)."""
+    raw = max_raw = 0.0
+    for key, penalty in dist._penalties.items():
+        if key in PARTIAL_DISC_PENALTIES:
+            continue
+        weight = dist._weights[key]
+        raw += sum(penalty) * weight
+        max_raw += len(penalty) * weight
+    return raw / max_raw if max_raw else 0.0
+
+
+def is_plausible(match: AlbumMatch, max_distance: float) -> bool:
+    """Whether `match` fits to the local files enough to be trusted over beets' recommendation."""
+    return core_distance(match.distance) <= max_distance
 
 
 ## Classes
@@ -863,6 +882,10 @@ class CatalogHintPlugin(BeetsPlugin):
             task.candidates, task.rec = original_candidates, original_rec
             return None
 
+        if not self._check_plausible(task, log):
+            task.candidates, task.rec = original_candidates, original_rec
+            return None
+
         total_tracks = len(task.candidates[0].info.tracks)
 
         sibling = self._sibling_releases.get(parent_dir)
@@ -909,8 +932,25 @@ class CatalogHintPlugin(BeetsPlugin):
             task.candidates, task.rec = original_candidates, original_rec
             return
 
+        if not self._check_plausible(task, log):
+            task.candidates, task.rec = original_candidates, original_rec
+            return
+
         log.debug('{0} usable candidate(s) after narrowing to the tied releases, '
                   'beets recommendation: {1}', len(task.candidates), task.rec)
+
+    def _check_plausible(self, task: ImportTask, log: TaskLog) -> bool:
+        """Guard against wrong release-group: best candidate must fit the local files."""
+        max_distance = config['match']['medium_rec_thresh'].as_number()
+        best = task.candidates[0]
+        if is_plausible(best, max_distance):
+            return True
+
+        log.warning('{0!r} ({1} - {2}) is too distant from the local files ({3:.2f} > {4:.2f}): '
+                    'wrong release-group? reverting to beets\' original candidates',
+                    best.info.album_id, best.info.artist, best.info.album,
+                    core_distance(best.distance), max_distance)
+        return False
 
     def _record_incremental_history(self, session: ImportSession, task: ImportTask) -> None:
         """

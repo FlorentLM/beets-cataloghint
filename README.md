@@ -20,6 +20,7 @@ disambiguation text, country, year) and, when it can, picks the exact release fo
   multi-disc track count.
 
 If no MusicBrainz release-group was resolved, or the lookup fails, `cataloghint` defers to beets as usual.
+It also defers to beets if the picked release fits the local files worse than beets' `medium_rec_thresh`, which usually means beets found the wrong release-group.
 
 ## Installation
 
