@@ -255,21 +255,31 @@ def hit_track_counts(hit: dict) -> dict[int, int]:
     return counts
 
 
-def layout_verdict(hit: dict, disc_layout: dict[int, int]) -> Optional[bool]:
+def layout_verdict(
+        hit: dict,
+        disc_layout: Optional[dict[int, int]] = None,
+        local_total: Optional[int] = None,
+    ) -> Optional[bool]:
     """
-    Whether the local vs musicbrainz per-disc track counts match.
-        - A disc can never hold more audio files than it has tracks on musicbrainz,
-            and a release can't have fewer discs than what is present locally.
-        - A musicbrainz release reporting more tracks/discs than found locally is plausible\
-            (a bonus DVD or data track never ripped as audio)
+    Whether the local vs MusicBrainz track counts match. Pass exactly one of:
 
-    True if every disc counted is an exact fit, False if any is impossible, None otherwise.
+    Local count can never exceed MusicBrainz's count, and MusicBrainz reporting more
+    tracks/discs than found locally is plausible (a bonus DVD or data track never ripped as audio).
+
+    True if every disc counted (or the whole-folder total) is an exact fit, False if any is
+    impossible, None otherwise.
     """
-    if not disc_layout:
-        return None
-
     hit_counts = hit_track_counts(hit)
     if not hit_counts:
+        return None
+
+    if local_total is not None:
+        total = sum(hit_counts.values())
+        if local_total > total:
+            return False
+        return True if local_total == total else None
+
+    if not disc_layout:
         return None
 
     max_disc = max(hit_counts)
@@ -452,20 +462,31 @@ def score_hits(
         target_formats: Optional[frozenset[str]] = None,
         preferred_countries: Optional[list[str]] = None,
         log=None,
-    ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
+        local_total: Optional[int] = None,
+    ) -> Tuple[list[str], list[Tuple[str, float, str, bool, bool]]]:
     """
     Score hits against text/country/year by barcode/catalog/disambiguation coverage.
     Substring that recurs across several releases in the group: score divided by how many releases have it.
-    A release contradicted by non-matching disc layout or target format is vetoed. One with fully matching disc layout gets a bonus.
+    A release contradicted by non-matching disc layout, or target format is vetoed.
+    One with a fully matching disc layout or, lacking that, a whole-folder track count that matches exactly, gets a bonus.
     A text match that's shared with another release in the group (a reused disambiguation label, for instance) is
     weak evidence: a differently-dated survivor whose year matches an explicit folder year outranks it instead.
     Finally if several releases are still tied, `preferred_countries` preference order breaks the tie.
-    Returns the unique best match's id (or None if none stands out), plus the full per-hit score.
+    Returns the selected ids and the score per hit.
     """
 
     logger = log or dummy_log
 
-    verdicts = [layout_verdict(hit, disc_layout) for hit in hits] if disc_layout else [None] * len(hits)
+    if disc_layout:
+        verdicts = [layout_verdict(hit, disc_layout=disc_layout) for hit in hits]
+    elif local_total:
+        verdicts = [layout_verdict(hit, local_total=local_total) for hit in hits]
+    else:
+        verdicts = [None] * len(hits)
+
+    # A verdict shared by every hit tells us nothing (e.g. every release has the exact same track count)
+    layout_discriminates = len(set(verdicts)) > 1
+
     survivor_ids = {hit['id'] for hit, v in zip(hits, verdicts) if v is not False}
     if not survivor_ids:
         # On-disk track counts contradict every release in the group: data isn't trustworthy here
@@ -484,7 +505,7 @@ def score_hits(
             (hit['id'], LAYOUT_MATCH_BONUS if hit['id'] in survivor_ids else -1.0, '', False, False)
             for hit in hits
         ]
-        return release_id, scored
+        return [release_id], scored
 
     hit_needles = [gather_needles(hit) for hit in hits]
     hit_looses = [{loose for v in needles if (loose := normalize(v))} for needles in hit_needles]
@@ -520,7 +541,7 @@ def score_hits(
         if diluted:
             diluted_ids.add(hit['id'])
 
-        if verdict is True:
+        if verdict is True and layout_discriminates:
             text_score += LAYOUT_MATCH_BONUS
 
         country_match = bool(hit.get('country')) and hit['country'] in folder_countries
@@ -556,6 +577,9 @@ def score_hits(
             if country_match or year_match
         }
 
+    if not matches and len(survivor_ids) < len(hits):
+        matches = survivor_ids
+
     if len(matches) == 1 and next(iter(matches)) in diluted_ids:
         # The unique winner only got there on a disambiguation label reused by another release: weak evidence
         # If exactly one survivor has a year that fits, prefer that one
@@ -578,9 +602,13 @@ def score_hits(
                 matches = narrowed
                 preferred_country_tiebreak = True
 
-    if len(matches) != 1:
-        return None, scored
-    # TODO: Return all the good matches
+    if not matches:
+        return [], scored
+
+    if len(matches) > 1:
+        tied_ids = [hit['id'] for hit in hits if hit['id'] in matches]
+        logger.debug('{0} releases tied, none stands out on its own: {1!r}', len(tied_ids), tied_ids)
+        return tied_ids, scored
 
     release_id = next(iter(matches))
     _, score, matched_text, country_match, year_match = next(s for s in scored if s[0] == release_id)
@@ -595,7 +623,7 @@ def score_hits(
         reason = 'country match'
 
     logger.debug('{0!r} stands out via {1}', release_id, reason)
-    return release_id, scored
+    return [release_id], scored
 
 
 def resolve_release(
@@ -607,19 +635,19 @@ def resolve_release(
         filenames: Optional[set[str]] = None,
         preferred_countries: Optional[list[str]] = None,
         log=None,
-    ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
+    ) -> Tuple[list[str], list[Tuple[str, float, str, bool, bool]]]:
     """
-    Pick the release in `hits` (from a given release-group) that the hints point to.
+    Pick the release(s) in `hits` (from a given release-group) that the hints point to.
 
-    Returns its id (or None if none stands out), plus the per-hit score so external callers
-    can still tell a clearly-worse release from an untried one even if no single hit stood out.
+    Returns the matching ids, plus the per-hit score so external callers can still tell a clearly
+    worse release from an untried one even if no single hit stood out.
     """
 
     logger = log or dummy_log
 
     if len(hits) == 1:
         logger.debug('only release in this release-group, trusting it: {0!r}', hits[0]['id'])
-        return hits[0]['id'], []
+        return [hits[0]['id']], []
 
     folder_exact, folder_loose, folder_countries, folder_years, media_hint = gather_haystack(
         item_dir, artist, album, check_cue, filenames
@@ -628,6 +656,8 @@ def resolve_release(
     is_disc, disc_number = looks_like_disc(os.path.basename(item_dir), artist, album)
     disc_layout = gather_disc_layout(item_dir, artist, album) if is_disc and disc_number is not None else {}
 
+    on_disk_total = None if is_disc else count_audio_files(item_dir) or None
+
     # A cue file is evidence of a CD-like medium
     hinted_formats = {media_hint} if media_hint else set()
     if check_cue and has_cue(item_dir):
@@ -635,13 +665,13 @@ def resolve_release(
     target_formats = next(iter(hinted_formats)) if len(hinted_formats) == 1 else None
 
     logger.debug('{0} releases in group, folder hint = {1!r}, country code(s) = {2}, year(s) = {3}, '
-              'disc layout = {4}, target medium = {5}',
+              'disc layout = {4}, local track count = {5}, target medium = {6}',
               len(hits), folder_loose, folder_countries or None, folder_years or None,
-              disc_layout or None, sorted(target_formats) if target_formats else None)
+              disc_layout or None, on_disk_total, sorted(target_formats) if target_formats else None)
 
     return score_hits(
         hits, folder_exact, folder_loose, folder_countries, folder_years, disc_layout, target_formats,
-        preferred_countries, logger,
+        preferred_countries, logger, on_disk_total,
     )
 
 
@@ -729,10 +759,17 @@ class CatalogHintPlugin(BeetsPlugin):
             log.debug('release-group {0!r} has no releases?', release_group_id)
             return None
 
-        release_id, scored = self._resolve_release(hits, task, log)
-        if release_id is not None:
-            log.debug('resolved release {0!r}', release_id)
-            return self._inject(task, release_id, parent_dir, identity, log)
+        release_ids, scored = self._resolve_release(hits, task, log)
+
+        if len(release_ids) == 1:
+            log.debug('resolved release {0!r}', release_ids[0])
+            return self._inject(task, release_ids[0], parent_dir, identity, log)
+
+        if len(release_ids) > 1:
+            log.debug('{0} releases tied ({1!r}), narrowing beets\' candidates to those.',
+                      len(release_ids), release_ids)
+            self._inject_shortlist(task, release_ids, log)
+            return None
 
         log.debug('{0} release(s) in group, none stood out, deferring to beets', len(hits))
         self._flag_if_outscored(task, scored, log)
@@ -763,7 +800,7 @@ class CatalogHintPlugin(BeetsPlugin):
             hits: list[dict],
             task: ImportTask,
             log: TaskLog
-        ) -> Tuple[str | None, list[Tuple[str, float, str, bool, bool]]]:
+        ) -> Tuple[list[str], list[Tuple[str, float, str, bool, bool]]]:
 
         item_dir = os.path.dirname(os.fsdecode(task.items[0].path))
         filenames = {os.path.basename(os.fsdecode(item.path)) for item in task.items}
@@ -857,6 +894,23 @@ class CatalogHintPlugin(BeetsPlugin):
             return task.candidates[0]
 
         return None
+
+    def _inject_shortlist(self, task: ImportTask, release_ids: list[str], log: TaskLog) -> None:
+        """
+        Several releases are equally plausible: restrict beets' candidates to those
+        and let beets' distance scoring rank/recommend them.
+        """
+
+        original_candidates, original_rec = task.candidates, task.rec
+
+        task.lookup_candidates(search_ids=release_ids)
+        if not task.candidates:
+            log.warning('shortlist {0!r} produced no usable candidate, reverting', release_ids)
+            task.candidates, task.rec = original_candidates, original_rec
+            return
+
+        log.debug('{0} usable candidate(s) after narrowing to the tied releases, '
+                  'beets recommendation: {1}', len(task.candidates), task.rec)
 
     def _record_incremental_history(self, session: ImportSession, task: ImportTask) -> None:
         """
