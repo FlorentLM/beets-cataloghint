@@ -110,19 +110,19 @@ def test_score_hits_resolves_unique_catalog_match():
     ]
     folder_exact, folder_loose = "kyuss 61340-2 flac", "kyuss613402flac"
 
-    release_id, scored = score_hits(hits, folder_exact, folder_loose, set(), set())
-    assert release_id == 'good'
+    release_ids, scored = score_hits(hits, folder_exact, folder_loose, set(), set())
+    assert release_ids == ['good']
     assert len(scored) == 3
 
 
-def test_score_hits_returns_none_on_tie():
+def test_score_hits_returns_both_tied_candidates_instead_of_picking():
     hits = [
         {'id': 'a', 'country': 'US', 'date': '2015'},
         {'id': 'b', 'country': 'GB', 'date': '2015'},
     ]
     # Neither country nor catalog text distinguishes them, but they share the year
-    release_id, scored = score_hits(hits, '', '', set(), {2015})
-    assert release_id is None
+    release_ids, scored = score_hits(hits, '', '', set(), {2015})
+    assert sorted(release_ids) == ['a', 'b']
     assert len(scored) == 2
 
 
@@ -133,20 +133,20 @@ def test_score_hits_year_breaks_a_text_score_tie():
         {'id': 'a', 'date': '2015', 'label_info': [{'catalog_number': 'XYZ-123'}]},
         {'id': 'b', 'date': '1999', 'label_info': [{'catalog_number': 'XYZ-123'}]},
     ]
-    release_id, _ = score_hits(hits, 'xyz-123', 'xyz123', set(), {2015})
-    assert release_id == 'a'
+    release_ids, _ = score_hits(hits, 'xyz-123', 'xyz123', set(), {2015})
+    assert release_ids == ['a']
 
 
-def test_score_hits_leaves_a_genuine_multi_way_tie_unresolved():
+def test_score_hits_returns_all_tied_candidates_on_a_genuine_multi_way_tie():
     # Three releases share the same catalog number and the same year
-    #   -> Nothing to break tie with, so this must defer (None)
+    #   -> Nothing to break tie with, so all three are handed back for beets to pick between
     hits = [
         {'id': 'a', 'date': '2015', 'label_info': [{'catalog_number': 'XYZ-123'}]},
         {'id': 'b', 'date': '2015', 'label_info': [{'catalog_number': 'XYZ-123'}]},
         {'id': 'c', 'date': '2015', 'label_info': [{'catalog_number': 'XYZ-123'}]},
     ]
-    release_id, scored = score_hits(hits, 'xyz-123', 'xyz123', set(), {2015})
-    assert release_id is None
+    release_ids, scored = score_hits(hits, 'xyz-123', 'xyz123', set(), {2015})
+    assert sorted(release_ids) == ['a', 'b', 'c']
     assert len(scored) == 3
 
 
@@ -155,10 +155,10 @@ def test_score_hits_preferred_countries_breaks_a_genuine_tie():
         {'id': 'a', 'date': '2015', 'country': 'US', 'label_info': [{'catalog_number': 'XYZ-123'}]},
         {'id': 'b', 'date': '2015', 'country': 'GB', 'label_info': [{'catalog_number': 'XYZ-123'}]},
     ]
-    release_id, _ = score_hits(
+    release_ids, _ = score_hits(
         hits, 'xyz-123', 'xyz123', set(), {2015}, preferred_countries=['GB', 'US'],
     )
-    assert release_id == 'b'
+    assert release_ids == ['b']
 
 
 def test_score_hits_preferred_countries_is_not_consulted_when_other_evidence_resolves_it():
@@ -166,21 +166,21 @@ def test_score_hits_preferred_countries_is_not_consulted_when_other_evidence_res
         {'id': 'strong_match', 'date': '2010', 'country': 'US', 'label_info': [{'catalog_number': '0602527463841'}]},
         {'id': 'year_only', 'date': '2000', 'country': 'GB'},
     ]
-    release_id, _ = score_hits(
+    release_ids, _ = score_hits(
         hits, '0602527463841', '0602527463841', set(), {2000}, preferred_countries=['GB'],
     )
-    assert release_id == 'strong_match'
+    assert release_ids == ['strong_match']
 
 
-def test_score_hits_preferred_countries_still_defers_when_none_of_the_tied_releases_are_listed():
+def test_score_hits_preferred_countries_still_returns_the_tie_when_none_of_the_releases_are_listed():
     hits = [
         {'id': 'a', 'date': '2015', 'country': 'FR', 'label_info': [{'catalog_number': 'XYZ-123'}]},
         {'id': 'b', 'date': '2015', 'country': 'DE', 'label_info': [{'catalog_number': 'XYZ-123'}]},
     ]
-    release_id, _ = score_hits(
+    release_ids, _ = score_hits(
         hits, 'xyz-123', 'xyz123', set(), {2015}, preferred_countries=['GB', 'US'],
     )
-    assert release_id is None
+    assert sorted(release_ids) == ['a', 'b']
 
 
 def test_normalize_preferred_countries_aliases_and_drops_unknowns():
@@ -196,11 +196,11 @@ def test_score_hits_prefers_year_match_over_a_disambiguation_shared_with_another
          'media': [{'position': 1, 'track_count': 8, 'format': 'Vinyl'}, {'position': 2, 'track_count': 9, 'format': 'Vinyl'}]},
         {'id': 'correct', 'date': '2016', 'disambiguation': '', 'media': _media(8, 9)},
     ]
-    release_id, _ = score_hits(
+    release_ids, _ = score_hits(
         hits, '2016 deluxe ed', '2016deluxeed', set(), {2016},
         disc_layout={1: 8, 2: 9}, target_formats=CD_FORMATS,
     )
-    assert release_id == 'correct'
+    assert release_ids == ['correct']
 
 
 def test_score_hits_unique_text_match_still_wins_despite_a_different_years_match():
@@ -210,8 +210,8 @@ def test_score_hits_unique_text_match_still_wins_despite_a_different_years_match
         {'id': 'strong_match', 'date': '2010', 'label_info': [{'catalog_number': '0602527463841'}]},
         {'id': 'year_only', 'date': '2000'},
     ]
-    release_id, _ = score_hits(hits, '0602527463841', '0602527463841', set(), {2000})
-    assert release_id == 'strong_match'
+    release_ids, _ = score_hits(hits, '0602527463841', '0602527463841', set(), {2000})
+    assert release_ids == ['strong_match']
 
 
 def test_gather_needles_strips_barcode_leading_zeros():
@@ -239,8 +239,8 @@ def test_score_hits_weak_evidence_resolves_when_only_one_hit_qualifies():
         {'id': 'a', 'country': 'US', 'date': '2015'},
         {'id': 'b', 'country': 'GB', 'date': '1999'},
     ]
-    release_id, _ = score_hits(hits, '', '', {'GB'}, set())
-    assert release_id == 'b'
+    release_ids, _ = score_hits(hits, '', '', {'GB'}, set())
+    assert release_ids == ['b']
 
 
 def _media(*track_counts):
@@ -268,8 +268,8 @@ def test_score_hits_disc_layout_uniquely_resolves_release_with_no_text_evidence(
         {'id': 'a', 'media': _media(12, 8)},
         {'id': 'b', 'media': _media(12, 9)},
     ]
-    release_id, _ = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
-    assert release_id == 'a'
+    release_ids, _ = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
+    assert release_ids == ['a']
 
 
 def test_score_hits_disc_layout_vetoes_a_release_that_cannot_hold_what_is_on_disk():
@@ -279,8 +279,8 @@ def test_score_hits_disc_layout_vetoes_a_release_that_cannot_hold_what_is_on_dis
         {'id': 'b', 'media': _media(12, 9), 'country': 'GB'},
         {'id': 'c', 'media': _media(12, 8), 'country': 'US'},
     ]
-    release_id, scored = score_hits(hits, '', '', {'GB'}, set(), {1: 12, 2: 9})
-    assert release_id == 'b'
+    release_ids, scored = score_hits(hits, '', '', {'GB'}, set(), {1: 12, 2: 9})
+    assert release_ids == ['b']
     assert dict((rid, score) for rid, score, *_ in scored)['c'] == -1.0
 
 
@@ -292,8 +292,8 @@ def test_score_hits_does_not_veto_a_release_reporting_more_tracks_than_found():
         {'id': 'a', 'media': _media(12, 8)},
         {'id': 'b', 'media': _media(12, 11)},
     ]
-    release_id, scored = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
-    assert release_id == 'a'
+    release_ids, scored = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
+    assert release_ids == ['a']
     assert dict((rid, score) for rid, score, *_ in scored)['b'] != -1.0
 
 
@@ -303,8 +303,8 @@ def test_score_hits_disc_layout_vetoes_a_release_with_too_few_discs():
         {'id': 'a', 'media': _media(12, 8)},
         {'id': 'b', 'media': _media(12)},
     ]
-    release_id, scored = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
-    assert release_id == 'a'
+    release_ids, scored = score_hits(hits, '', '', set(), set(), {1: 12, 2: 8})
+    assert release_ids == ['a']
     assert dict((rid, score) for rid, score, *_ in scored)['b'] == -1.0
 
 
@@ -314,8 +314,8 @@ def test_score_hits_ignores_disc_layout_contradicting_every_release():
         {'id': 'a', 'media': _media(5)},
         {'id': 'b', 'media': _media(3)},
     ]
-    release_id, scored = score_hits(hits, '', '', set(), set(), {1: 12})
-    assert release_id is None
+    release_ids, scored = score_hits(hits, '', '', set(), set(), {1: 12})
+    assert release_ids == []
     assert all(score >= 0 for _, score, *_ in scored)
 
 
@@ -331,8 +331,8 @@ def test_score_hits_target_format_vetoes_a_vinyl_release():
         {'id': 'cd', 'media': [{'format': 'CD'}]},
         {'id': 'vinyl', 'media': [{'format': 'Vinyl'}]},
     ]
-    release_id, scored = score_hits(hits, '', '', set(), set(), target_formats=CD_FORMATS)
-    assert release_id == 'cd'
+    release_ids, scored = score_hits(hits, '', '', set(), set(), target_formats=CD_FORMATS)
+    assert release_ids == ['cd']
     assert dict((rid, score) for rid, score, *_ in scored)['vinyl'] == -1.0
 
 
@@ -343,8 +343,8 @@ def test_score_hits_ignores_target_format_when_it_contradicts_every_release():
         {'id': 'a', 'media': [{'format': 'Vinyl'}]},
         {'id': 'b', 'media': [{'format': 'Cassette'}]},
     ]
-    release_id, scored = score_hits(hits, '', '', set(), set(), target_formats=CD_FORMATS)
-    assert release_id is None
+    release_ids, scored = score_hits(hits, '', '', set(), set(), target_formats=CD_FORMATS)
+    assert release_ids == []
     assert all(score >= 0 for _, score, *_ in scored)
 
 
