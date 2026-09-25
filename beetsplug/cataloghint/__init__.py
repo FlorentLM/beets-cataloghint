@@ -717,10 +717,13 @@ class CatalogHintPlugin(BeetsPlugin):
             }
         )
         self.register_listener('import_task_before_choice', self.before_choice)
+        self.register_listener('import_task_choice', self._record_manual_choice)
         self.register_listener('import_task_apply', self._record_incremental_history)
 
         # parent directory -> [release id, (artist, album) identity, tracks found so far, release's total track count]
         self._sibling_releases: dict[str, list] = {}
+
+        self._counted_dirs: set[bytes] = set()
 
         # Directories for which cataloghint resolved a release but are still not applied by user
         self._pending_history_dirs: set[bytes] = set()
@@ -918,6 +921,7 @@ class CatalogHintPlugin(BeetsPlugin):
             tracks_so_far = len(task.items)
 
         self._sibling_releases[parent_dir] = [release_id, identity, tracks_so_far, total_tracks]
+        self._counted_dirs.add(os.path.dirname(task.items[0].path))
 
         log.debug('{0} usable candidate(s) after restricting to {1!r} -> recommendation set to strong, '
                   'track tally under {2!r}: {3}/{4} tracks',
@@ -981,3 +985,35 @@ class CatalogHintPlugin(BeetsPlugin):
             self._log.debug('recorded {0!r} in incremental import history', os.fsdecode(directory))
 
         self._pending_history_dirs -= matched
+
+    def _record_manual_choice(self, session: ImportSession, task: ImportTask) -> None:
+        """
+        Record manually selected releases so other disc subfolders can inherit them.
+        """
+        if not task.is_album or not task.apply or task.match is None:
+            return
+
+        counted_dir = os.path.dirname(task.items[0].path)
+        if counted_dir in self._counted_dirs:
+            return
+
+        identity = (normalize(task.source.artist or ''), normalize(task.source.name or ''))
+        if identity == ('', ''):
+            return
+
+        album_dir = os.path.dirname(os.fsdecode(task.items[0].path))
+        parent_dir = os.path.dirname(album_dir)
+        release_id = task.match.info.album_id
+        total_tracks = len(task.match.info.tracks)
+
+        sibling = self._sibling_releases.get(parent_dir)
+        if sibling and sibling[1] == identity and sibling[0] == release_id:
+            tracks_so_far = sibling[2] + len(task.items)
+        else:
+            tracks_so_far = len(task.items)
+
+        self._sibling_releases[parent_dir] = [release_id, identity, tracks_so_far, total_tracks]
+        self._counted_dirs.add(counted_dir)
+
+        self._log.debug('[{0}] recorded manually chosen release {1!r} for multi-disc reuse under {2!r}',
+                         os.path.basename(album_dir), release_id, parent_dir)
