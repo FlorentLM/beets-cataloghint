@@ -15,8 +15,10 @@ cataloghint scores release from a release-group against whatever is found in the
 """
 from __future__ import annotations
 import difflib
+import functools
 import os
 import re
+import threading
 from datetime import date
 from typing import TYPE_CHECKING, Optional, Tuple
 import mediafile
@@ -33,6 +35,44 @@ if TYPE_CHECKING:
     from beets.autotag.match import AlbumMatch
     from beets.importer import ImportSession, ImportTask
     from beetsplug.musicbrainz import MusicBrainzPlugin
+
+
+# TODO: PR locking in beets itself
+def _patch_import_state_locking() -> None:
+    """Serialise Beets' ImportState's unlocked read-modify-write of state.pickle."""
+    if getattr(ImportState, '_cataloghint_locked', False):
+        return
+
+    lock = threading.RLock()
+    orig_open = ImportState._open
+    orig_save = ImportState._save
+
+    @functools.wraps(orig_open)
+    def _open(self):
+        with lock:
+            return orig_open(self)
+
+    @functools.wraps(orig_save)
+    def _save(self):
+        with lock:
+            return orig_save(self)
+
+    def _serialize(orig):
+        @functools.wraps(orig)
+        def wrapper(self, *args, **kwargs):
+            with lock:
+                self._open()
+                return orig(self, *args, **kwargs)
+        return wrapper
+
+    ImportState._open = _open
+    ImportState._save = _save
+    ImportState.history_add = _serialize(ImportState.history_add)
+    ImportState.progress_add = _serialize(ImportState.progress_add)
+    ImportState._cataloghint_locked = True
+
+
+_patch_import_state_locking()
 
 
 ## Configs

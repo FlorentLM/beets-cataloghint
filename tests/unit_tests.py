@@ -5,9 +5,13 @@ No network, no fixture folders needed.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from types import SimpleNamespace
 
+from beets import config
 from beets.autotag.distance import Distance
+from beets.importer.state import ImportState
 
 from beetsplug.cataloghint import (
     CASSETTE_FORMATS,
@@ -419,3 +423,25 @@ def test_is_plausible_accepts_partial_disc_despite_missing_tracks():
     assert dist.distance > 0.25
     assert core_distance(dist) < 0.05
     assert is_plausible(SimpleNamespace(distance=dist), 0.25)
+
+
+def test_import_state_history_add_survives_concurrent_writers(tmp_path, monkeypatch):
+    config['statefile'] = os.fspath(tmp_path / 'state.pickle')
+    config['statefile'].as_filename()   # force lazy config resolution before threads race on it
+
+    real_open = ImportState._open
+
+    def slow_open(self):
+        real_open(self)
+        time.sleep(0.05)
+
+    monkeypatch.setattr(ImportState, '_open', slow_open)
+
+    paths = [f'/music/disc-{i}'.encode() for i in range(4)]
+    threads = [threading.Thread(target=lambda p=p: ImportState().history_add([p])) for p in paths]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert ImportState().taghistory == {(p,) for p in paths}
