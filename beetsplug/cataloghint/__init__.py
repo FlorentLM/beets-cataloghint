@@ -256,9 +256,13 @@ def hit_track_counts(hit: dict) -> dict[int, int]:
     counts = {}
     for medium in hit.get('media') or []:
         try:
-            counts[int(medium['position'])] = int(medium['track_count'])
+            position = int(medium['position'])
+            count = int(medium['track_count'])
         except (KeyError, TypeError, ValueError):
             continue
+        if medium.get('pregap'):    # hidden pregap track
+            count += 1
+        counts[position] = count
     return counts
 
 
@@ -815,7 +819,13 @@ class CatalogHintPlugin(BeetsPlugin):
         """
         try:
             return mb.mb_api._browse(
-                'release', **{'release-group': release_group_id}, includes=['labels', 'media'], limit=100
+                'release', **{'release-group': release_group_id},
+                includes=[
+                    'labels',
+                    'media',
+                    'recordings'    # needed for hidden pregap tracks   # TODO: This might be making the requests too slow?
+                ],
+                limit=100,
             )
         except requests.exceptions.RequestException as e:
             raise MusicBrainzUnavailable(f'release-group {release_group_id}: {e}') from e
