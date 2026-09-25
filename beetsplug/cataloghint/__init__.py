@@ -69,6 +69,7 @@ def _patch_import_state_locking() -> None:
     ImportState._save = _save
     ImportState.history_add = _serialize(ImportState.history_add)
     ImportState.progress_add = _serialize(ImportState.progress_add)
+    ImportState.progress_reset = _serialize(ImportState.progress_reset)
     ImportState._cataloghint_locked = True
 
 
