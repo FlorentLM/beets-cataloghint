@@ -163,9 +163,14 @@ def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[s
     ]
 
     folder = DISC_TOKEN_RE.sub(' ', folder)
+    folder = YEAR_RE.sub(' ', folder)     # just a year isn't disc name evidence
     folder = PUNCT_RE.sub('', folder).strip()
 
-    if not len(folder) <= DISC_NAME_MAX_LEN:
+    if not folder and not numbers:
+        # Nothing but artist/album/year/punctuation: this is a decorated album folder, not a disc name
+        return False, None
+
+    if len(folder) > DISC_NAME_MAX_LEN:
         return False, None
 
     if len(numbers) == 1:
