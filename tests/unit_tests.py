@@ -27,6 +27,7 @@ from beetsplug.cataloghint import (
     gather_needles,
     is_plausible,
     match_score,
+    task_source,
     validate_preferred_countries,
     score_hits,
 )
@@ -194,6 +195,16 @@ def test_score_hits_preferred_countries_still_returns_the_tie_when_none_of_the_r
 
 def test_normalize_preferred_countries_aliases_and_drops_unknowns():
     assert validate_preferred_countries(['uk', 'usa', 'gb', 'zz']) == ['GB', 'US']
+
+
+def test_task_source_reads_source_on_beets_2_14_plus():
+    task = SimpleNamespace(source=SimpleNamespace(artist='Eminem', name='The Marshall Mathers LP'))
+    assert task_source(task) == ('Eminem', 'The Marshall Mathers LP')
+
+
+def test_task_source_falls_back_to_cur_artist_on_older_beets():
+    task = SimpleNamespace(cur_artist='Eminem', cur_album='The Marshall Mathers LP')
+    assert task_source(task) == ('Eminem', 'The Marshall Mathers LP')
 
 
 def test_score_hits_prefers_year_match_over_a_disambiguation_shared_with_another_release():

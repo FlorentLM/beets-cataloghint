@@ -164,6 +164,17 @@ class MusicBrainzUnavailable(Exception):
 
 ## Helpers
 
+def task_source(task: ImportTask) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Artist, and album beets guessed.
+    (beets < 2.14 doesn't have `task.source`)
+    """
+    source = getattr(task, 'source', None)
+    if source is not None:
+        return source.artist, source.name
+    return task.cur_artist, task.cur_album
+
+
 def normalize(s: str) -> str:
     return NORMALIZE_RE.sub("", s).casefold()
 
@@ -795,9 +806,10 @@ class CatalogHintPlugin(BeetsPlugin):
         log = TaskLog(self._log, os.path.basename(album_dir))
 
         # Sibling discs matching relies on this
-        identity = (normalize(task.source.artist or ''), normalize(task.source.name or ''))
+        src_artist, src_album = task_source(task)
+        identity = (normalize(src_artist or ''), normalize(src_album or ''))
         log.debug('examining {0!r} (artist={1!r}, album={2!r})',
-                  album_dir, task.source.artist, task.source.name)
+                  album_dir, src_artist, src_album)
 
         if self.config['check_sibling_discs'].get(bool):
             sibling = self._sibling_releases.get(parent_dir)
@@ -885,9 +897,10 @@ class CatalogHintPlugin(BeetsPlugin):
         filenames = {os.path.basename(os.fsdecode(item.path)) for item in task.items}
 
         preferred_countries = validate_preferred_countries(self.config['preferred_countries'].as_str_seq())
+        src_artist, src_album = task_source(task)
 
         return resolve_release(
-            hits, item_dir, task.source.artist, task.source.name,
+            hits, item_dir, src_artist, src_album,
             check_cue=self.config['check_cue'].get(bool), filenames=filenames,
             preferred_countries=preferred_countries, log=log,
         )
@@ -1039,7 +1052,8 @@ class CatalogHintPlugin(BeetsPlugin):
         if counted_dir in self._counted_dirs:
             return
 
-        identity = (normalize(task.source.artist or ''), normalize(task.source.name or ''))
+        src_artist, src_album = task_source(task)
+        identity = (normalize(src_artist or ''), normalize(src_album or ''))
         if identity == ('', ''):
             return
 
