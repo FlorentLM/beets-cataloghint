@@ -436,6 +436,11 @@ def test_is_plausible_accepts_partial_disc_despite_missing_tracks():
     assert is_plausible(SimpleNamespace(distance=dist), 0.25)
 
 
+def test_is_plausible_rejects_lone_mismatched_track_despite_missing_tracks():
+    dist = _album_distance(0.0, [0.8], missing=4)
+    assert not is_plausible(SimpleNamespace(distance=dist), 0.25)
+
+
 def test_import_state_history_add_survives_concurrent_writers(tmp_path, monkeypatch):
     config['statefile'] = os.fspath(tmp_path / 'state.pickle')
     config['statefile'].as_filename()   # force lazy config resolution before threads race on it

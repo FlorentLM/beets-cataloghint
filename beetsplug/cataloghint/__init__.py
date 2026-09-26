@@ -80,6 +80,7 @@ _patch_import_state_locking()
 
 MIN_OVERLAP = 5     # below this, a (non-year) shared digit run is more likely coincidence
 PARTIAL_DISC_PENALTIES = {'missing_tracks'}     # penalties a partial disc incurs
+MAX_MATCHED_TRACK_DISTANCE = 0.1     # matched tracks must average below this before missing tracks are forgiven
 LAYOUT_MATCH_BONUS = 2.5     # > than max match_score (2.0): a multi-disc layout match beats text matches   # TODO: Tune this?
 
 
@@ -385,10 +386,15 @@ def hit_year(hit: dict) -> Optional[int]:
 
 
 def core_distance(dist: Distance) -> float:
-    """Beets' distance (ignoring penalties a partial disc legitimately has)."""
+    """
+    Beets' distance, ignoring penalties a partial disc legitimately has.
+    """
+    matched = dist._penalties.get('tracks') or []
+    trustworthy_partial = bool(matched) and sum(matched) / len(matched) <= MAX_MATCHED_TRACK_DISTANCE
+
     raw = max_raw = 0.0
     for key, penalty in dist._penalties.items():
-        if key in PARTIAL_DISC_PENALTIES:
+        if key in PARTIAL_DISC_PENALTIES and trustworthy_partial:
             continue
         weight = dist._weights[key]
         raw += sum(penalty) * weight
