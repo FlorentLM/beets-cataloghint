@@ -197,9 +197,10 @@ def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[s
     if folder.strip().isdigit() and 0 < int(folder.strip()) < 20:
         return True, int(folder.strip())
 
+    token_matches = list(re.finditer(DISC_TOKEN_RE, folder))
     numbers = [
         int(n) if n.isdigit() else DISC_WORD_NUMS[n.lower()]
-        for n in (m.group('num') for m in re.finditer(DISC_TOKEN_RE, folder))
+        for n in (m.group('num') for m in token_matches)
         if n
     ]
 
@@ -207,7 +208,7 @@ def looks_like_disc(folder: str, artist: Optional[str] = None, album: Optional[s
     folder = YEAR_RE.sub(' ', folder)     # just a year isn't disc name evidence
     folder = PUNCT_RE.sub('', folder).strip()
 
-    if not folder and not numbers:
+    if not folder and not numbers and not token_matches:
         # Nothing but artist/album/year/punctuation: this is a decorated album folder, not a disc name
         return False, None
 
