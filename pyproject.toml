@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "beets-cataloghint"
-version = "0.0.9"
+version = "1.0.0"
 description = "Beets plugin to resolve an exact MusicBrainz release match"
 authors = [
     {name = "Florent Le Moël", email = "25004801+FlorentLM@users.noreply.github.com"},
