@@ -12,9 +12,27 @@ authors = [
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
+keywords = ["beets", "beetsplug", "music", "musicbrainz", "import", "catalog number", "barcode"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Sound/Audio",
+]
 dependencies = [
     "beets>=2.11.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/FlorentLM/beets-cataloghint"
+Issues = "https://github.com/FlorentLM/beets-cataloghint/issues"
 
 [dependency-groups]
 dev = [
